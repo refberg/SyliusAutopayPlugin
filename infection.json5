@@ -29,7 +29,7 @@
         "text": "var/infection.log",
         "github": true
     },
-    // Raise the thresholds to the measured MSI once the first CI run reports it.
-    "minMsi": 70,
-    "minCoveredMsi": 75
+    // Measured MSI is 86.5% (covered code: 86.5%); the thresholds keep it from dropping.
+    "minMsi": 85,
+    "minCoveredMsi": 85
 }
