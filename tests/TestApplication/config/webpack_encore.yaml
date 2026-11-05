@@ -1,0 +1,4 @@
+# Admin pages are rendered without built frontend assets.
+when@test:
+    webpack_encore:
+        strict_mode: false

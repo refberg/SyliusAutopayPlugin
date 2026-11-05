@@ -1,0 +1,29 @@
+security:
+    providers:
+        sylius_api_admin_user_provider:
+            id: sylius.admin_user_provider.email_or_name_based
+        sylius_api_shop_user_provider:
+            id: sylius.shop_user_provider.email_or_name_based
+
+    password_hashers:
+        Sylius\Component\User\Model\UserInterface: argon2i
+
+    firewalls:
+        api_admin:
+            pattern: "%sylius.security.api_admin_regex%/.*"
+            provider: sylius_api_admin_user_provider
+            user_checker: security.user_checker.chain.api_admin
+            stateless: true
+            jwt: true
+
+        api_shop:
+            pattern: "%sylius.security.api_shop_regex%/.*"
+            provider: sylius_api_shop_user_provider
+            user_checker: security.user_checker.chain.api_shop
+            stateless: true
+            jwt: true
+
+    access_control:
+        - { path: "%sylius.security.api_admin_regex%/.*", role: ROLE_API_ACCESS }
+        - { path: "%sylius.security.api_shop_account_regex%/.*", role: ROLE_USER }
+        - { path: "%sylius.security.api_shop_regex%/.*", role: PUBLIC_ACCESS }

@@ -1,0 +1,31 @@
+imports:
+    - { resource: "@SyliusCoreBundle/Resources/config/app/config.yml" }
+    - { resource: "@SyliusPayumBundle/Resources/config/app/config.yaml" }
+    - { resource: "@SyliusApiBundle/Resources/config/app/config.yaml" }
+
+parameters:
+    locale: en_US
+    sylius_core.public_dir: '%kernel.project_dir%/public'
+
+framework:
+    secret: '%env(APP_SECRET)%'
+    test: true
+    session:
+        storage_factory_id: session.storage.factory.mock_file
+
+doctrine:
+    dbal:
+        url: '%env(resolve:DATABASE_URL)%'
+
+lexik_jwt_authentication:
+    secret_key: '%env(resolve:JWT_SECRET_KEY)%'
+    public_key: '%env(resolve:JWT_PUBLIC_KEY)%'
+    pass_phrase: '%env(JWT_PASSPHRASE)%'
+
+sylius_api:
+    enabled: true
+
+# ux-twig-component 3 requires these keys; the full test application gets them from its twig_component.yaml.
+twig_component:
+    anonymous_template_directory: components/
+    defaults: {}

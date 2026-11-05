@@ -1,0 +1,8 @@
+imports:
+    - { resource: "services_test.php" }
+
+when@test:
+    # Admin pages render icons from the local set only, so tests never call the Iconify API.
+    ux_icons:
+        iconify:
+            enabled: false

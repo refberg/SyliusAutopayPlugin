@@ -1,0 +1,214 @@
+name: Build
+
+on:
+    push:
+        branches:
+            - main
+    pull_request: ~
+    workflow_dispatch: ~
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+env:
+    APP_ENV: test
+    DATABASE_URL: "mysql://root@127.0.0.1:3306/refberg_sylius_autopay_plugin_test?serverVersion=8.0"
+
+jobs:
+    quality:
+        runs-on: ubuntu-latest
+        name: "Static analysis and coding standard"
+
+        steps:
+            -
+                uses: actions/checkout@v7
+
+            -
+                name: Set up PHP
+                uses: shivammathur/setup-php@v2
+                with:
+                    php-version: "8.3"
+                    extensions: intl, sodium, pdo_mysql
+                    coverage: none
+                    tools: composer:v2, composer-normalize
+
+            -
+                name: Validate composer.json
+                run: composer validate --ansi --strict
+
+            -
+                name: Check composer.json normalization
+                run: composer-normalize --dry-run --diff
+
+            -
+                name: Install dependencies
+                uses: ramsey/composer-install@v4
+
+            -
+                name: Check for known vulnerabilities
+                run: composer audit --locked --abandoned=report
+
+            -
+                name: Check dependencies
+                run: vendor/bin/composer-dependency-analyser
+
+            -
+                name: Check coding standard
+                run: vendor/bin/ecs check
+
+            -
+                name: Run Rector
+                run: vendor/bin/rector process --dry-run --no-progress-bar
+
+            -
+                name: Build test container
+                run: vendor/bin/console cache:warmup
+
+            -
+                name: Run PHPStan
+                run: vendor/bin/phpstan analyse --no-progress
+
+            -
+                name: Lint container, YAML and Twig
+                run: |
+                    vendor/bin/console lint:container
+                    vendor/bin/console lint:yaml config translations tests/TestApplication/config
+                    vendor/bin/console lint:twig templates
+
+    tests:
+        runs-on: ubuntu-latest
+        name: "Tests: PHP ${{ matrix.php }}, Sylius ${{ matrix.sylius }}, Symfony ${{ matrix.symfony }}${{ matrix.label && format(' ({0})', matrix.label) || '' }}"
+
+        env:
+            SYMFONY_REQUIRE: ${{ matrix.symfony }}
+
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - php: "8.2"
+                      sylius: "2.2.12"
+                      symfony: "6.4.*"
+                      require: "doctrine/orm:~2.20.0 doctrine/dbal:~3.10.0 sylius/resource-bundle:~1.12.0 psr/log:~3.0.0 symfony/http-client-contracts:~3.4.4"
+                      require-dev: "phpunit/phpunit:~11.5.0"
+                      label: "lowest"
+                    - php: "8.4"
+                      sylius: "~2.2.12"
+                      symfony: "7.4.*"
+                    - php: "8.3"
+                      sylius: "2.3.2"
+                      symfony: "6.4.*"
+                      require: "doctrine/orm:^2.20 doctrine/dbal:^3.10"
+                      require-dev: "phpunit/phpunit:~12.5.0"
+                      label: "ORM 2"
+                    - php: "8.3"
+                      sylius: "~2.3.2"
+                      symfony: "7.4.*"
+                    - php: "8.4"
+                      sylius: "~2.3.2"
+                      symfony: "8.*"
+                    - php: "8.5"
+                      sylius: "~2.3.2"
+                      symfony: "8.*"
+
+        services:
+            mysql:
+                image: mysql:8.0
+                env:
+                    MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+                ports:
+                    - 3306:3306
+                options: --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=5s --health-retries=10
+
+        steps:
+            -
+                uses: actions/checkout@v7
+
+            -
+                name: Set up PHP
+                uses: shivammathur/setup-php@v2
+                with:
+                    php-version: "${{ matrix.php }}"
+                    extensions: intl, sodium, pdo_mysql
+                    coverage: none
+                    tools: composer:v2, flex
+
+            -
+                name: Restrict versions
+                run: |
+                    composer require --no-update --no-scripts --no-interaction "sylius/sylius:${{ matrix.sylius }}" ${{ matrix.require }}
+                    if [ -n "${{ matrix.require-dev }}" ]; then
+                        composer require --dev --no-update --no-scripts --no-interaction ${{ matrix.require-dev }}
+                    fi
+
+            -
+                name: Install dependencies
+                uses: ramsey/composer-install@v4
+
+            -
+                name: Check for known vulnerabilities
+                run: composer audit --locked --abandoned=report
+
+            -
+                name: Run unit tests
+                run: vendor/bin/phpunit --testsuite=unit
+
+            -
+                name: Validate container
+                run: vendor/bin/console lint:container
+
+            -
+                name: Prepare database
+                run: |
+                    vendor/bin/console doctrine:database:create --if-not-exists
+                    vendor/bin/console doctrine:schema:create
+                    vendor/bin/console doctrine:schema:validate
+
+            -
+                name: Run integration tests
+                run: vendor/bin/phpunit --testsuite=integration
+
+    mutation:
+        runs-on: ubuntu-latest
+        name: "Mutation tests"
+
+        steps:
+            -
+                uses: actions/checkout@v7
+
+            -
+                name: Set up PHP
+                uses: shivammathur/setup-php@v2
+                with:
+                    php-version: "8.3"
+                    extensions: intl, sodium
+                    coverage: pcov
+                    tools: composer:v2, infection
+
+            -
+                name: Install dependencies
+                uses: ramsey/composer-install@v4
+
+            -
+                name: Run Infection
+                run: infection --threads=max --no-progress --show-mutations=10
+
+    # Single required check for branch protection, independent of the matrix job names.
+    ci-passed:
+        runs-on: ubuntu-latest
+        name: "CI passed"
+        if: always()
+        needs: [quality, tests, mutation]
+
+        steps:
+            -
+                name: Check the result of all jobs
+                run: |
+                    if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = "true" ]; then
+                        echo "Some jobs did not succeed."
+                        exit 1
+                    fi

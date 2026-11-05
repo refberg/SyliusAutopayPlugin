@@ -1,0 +1,16 @@
+/vendor/
+/var/
+/node_modules/
+/composer.lock
+
+/.phpunit.cache/
+/.phpunit.result.cache
+/phpunit.xml
+/.php-cs-fixer.cache
+
+/tests/TestApplication/.env.local
+/tests/TestApplication/.env.*.local
+
+# Local-only install helper (not used by CI)
+/composer.local.json
+/composer.local.lock
