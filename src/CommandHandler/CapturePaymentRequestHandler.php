@@ -65,6 +65,11 @@ final readonly class CapturePaymentRequestHandler
 
                 return;
             }
+            if ($payment->getCurrencyCode() !== $credentials->currency) {
+                $this->failRequest($paymentRequest, sprintf('The Autopay service accepts only %s, not %s.', $credentials->currency, (string) $payment->getCurrencyCode()));
+
+                return;
+            }
 
             $orderId = $this->extOrderIdGenerator->generate($payment, $paymentRequest);
             $parameters = $this->transactionRequestFactory->create($paymentRequest, $payment, $orderId);
@@ -80,7 +85,7 @@ final readonly class CapturePaymentRequestHandler
         }
 
         $details = PaymentDetails::of($payment);
-        $details->addOrder($orderId, $credentials->serviceId, $started->remoteId, (int) $payment->getAmount(), (string) $payment->getCurrencyCode());
+        $details->addOrder($orderId, $credentials->serviceId, $started->remoteId, (int) $payment->getAmount(), $payment->getCurrencyCode(), $paymentRequest->getMethod()->getCode());
         $details->save();
 
         $paymentRequest->setResponseData([

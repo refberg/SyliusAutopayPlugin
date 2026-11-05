@@ -6,29 +6,24 @@ namespace Refberg\SyliusAutopayPlugin\CommandHandler;
 
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
-use Refberg\SyliusAutopayPlugin\Api\AutopayClientInterface;
 use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayException;
-use Refberg\SyliusAutopayPlugin\Api\Model\AutopayTransaction;
-use Refberg\SyliusAutopayPlugin\Api\Model\TransactionCancelled;
 use Refberg\SyliusAutopayPlugin\Command\CancelPaymentRequest;
 use Refberg\SyliusAutopayPlugin\Config\CredentialsResolverInterface;
 use Refberg\SyliusAutopayPlugin\Config\InvalidConfigurationException;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentLockerInterface;
+use Refberg\SyliusAutopayPlugin\Payment\TransactionCancellerInterface;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Bundle\PaymentBundle\Provider\PaymentRequestProviderInterface;
 use Sylius\Component\Payment\Model\PaymentInterface;
 use Sylius\Component\Payment\Model\PaymentRequestInterface;
-use function hash;
 use function implode;
 use function sprintf;
-use function substr;
 
 /**
- * Cancels, with transactionCancel, every Autopay OrderID of the payment that may still be paid, after the payment
+ * Cancels, with transactionCancel, every Autopay OrderID of the payment that is not paid, after the payment
  * was cancelled in Sylius (e.g. by an administrator). Without it the customer could still pay a cancelled order.
  *
- * MessageID is derived from the payment request hash and the OrderID, so a redelivered request is not processed twice.
  * OrderIDs of another Autopay service (started before the customer switched methods) cannot be cancelled with
  * these credentials and are only flagged.
  *
@@ -41,7 +36,7 @@ final readonly class CancelPaymentRequestHandler
     public function __construct(
         private PaymentRequestProviderInterface $paymentRequestProvider,
         private CredentialsResolverInterface $credentialsResolver,
-        private AutopayClientInterface $client,
+        private TransactionCancellerInterface $canceller,
         private PaymentLockerInterface $paymentLocker,
         private StateMachineInterface $stateMachine,
         private LoggerInterface $logger = new NullLogger(),
@@ -72,12 +67,13 @@ final readonly class CancelPaymentRequestHandler
             return;
         }
 
-        $details = PaymentDetails::of($payment);
         $cancelled = [];
         $errors = [];
-        foreach ($details->getOpenOrderIds() as $orderId) {
-            if (!$details->hasOrderOfService($orderId, $credentials->serviceId)) {
+        foreach (PaymentDetails::of($payment)->getUnpaidOrderIds() as $orderId) {
+            if (!PaymentDetails::of($payment)->hasOrderOfService($orderId, $credentials->serviceId)) {
+                $details = PaymentDetails::of($payment);
                 $details->addWarning(PaymentDetails::WARNING_NOT_CANCELLED, $orderId);
+                $details->save();
                 $this->logger->warning('Autopay transaction of another service cannot be cancelled; check it in the Autopay panel.', [
                     'payment_id' => $payment->getId(),
                     'order_id' => $orderId,
@@ -86,40 +82,24 @@ final readonly class CancelPaymentRequestHandler
                 continue;
             }
 
-            $messageId = substr(hash('sha256', $paymentRequest->getId() . '|' . $orderId), 0, 32);
-
             try {
-                $result = $this->client->cancelTransaction($credentials, $orderId, $messageId);
+                $result = $this->canceller->cancel($payment, $orderId, self::messageId($paymentRequest, $orderId), $credentials);
             } catch (AutopayException $exception) {
-                $errors[] = $exception->getMessage();
-                $this->logger->error('Could not cancel Autopay transaction; check it in the Autopay panel.', [
+                $result = $exception->getMessage();
+            }
+
+            if (TransactionCancellerInterface::RESULT_CANCELLED === $result) {
+                $cancelled[] = $orderId;
+            } elseif (TransactionCancellerInterface::RESULT_NOTHING_PENDING !== $result) {
+                $reason = TransactionCancellerInterface::RESULT_PAID === $result ? sprintf('Autopay transaction %s was already paid.', $orderId) : $result;
+                $errors[] = $reason;
+                $this->logger->error('Autopay transaction of a cancelled payment was not cancelled; check it in the Autopay panel.', [
                     'payment_id' => $payment->getId(),
                     'order_id' => $orderId,
-                    'reason' => $exception->getMessage(),
+                    'reason' => $reason,
                 ]);
-
-                continue;
             }
-
-            if (
-                ($result->confirmed && TransactionCancelled::CANCELED_FULLY === $result->reason) ||
-                (!$result->confirmed && TransactionCancelled::TRANSACTION_NOT_FOUND === $result->reason)
-            ) {
-                $details->recordOrderStatus($orderId, AutopayTransaction::STATUS_FAILURE);
-                $cancelled[] = $orderId;
-
-                continue;
-            }
-
-            // CANCELED_PARTIALLY or INCORRECT_PAYMENT_STATUS: an attempt was probably paid; its ITN records a warning.
-            $errors[] = sprintf('Autopay transaction %s was not fully cancelled (%s).', $orderId, $result->reason ?? 'no reason');
-            $this->logger->error('Autopay transaction was not fully cancelled and may be paid; check it in the Autopay panel.', [
-                'payment_id' => $payment->getId(),
-                'order_id' => $orderId,
-                'reason' => $result->reason,
-            ]);
         }
-        $details->save();
 
         if ([] !== $errors) {
             $this->failRequest($paymentRequest, implode(' ', $errors));

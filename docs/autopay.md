@@ -64,7 +64,7 @@ one `OrderID` give HTTP 403 with `LIMIT_REQUESTED_TRANSACTIONS_WITH_THE_SAME_ORD
 |--------------------------------------------|-----------------------------------------------------|
 | at least one `SUCCESS`                     | `SUCCESS`; more than one: `duplicate_payment` warning |
 | a `PENDING` one and no `SUCCESS`           | `PENDING`                                           |
-| only `FAILURE`                             | `FAILURE`                                           |
+| only `FAILURE`                             | `FAILURE` – the Sylius payment stays `new`, a new attempt can still pay it |
 
 - **A4** – The elements of the answer come in the documented hash order (the documentation shows the hash chain,
   not a full example document).

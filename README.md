@@ -100,6 +100,10 @@ In the admin panel, go to **Configuration → Payment methods → Create → Aut
 | Service ID     | `ServiceID`                                           |
 | Shared key     | shared key (klucz współdzielony)                       |
 | Hash algorithm | hash function of the service (SHA-256 by default)     |
+| Currency       | the one currency of the service (PLN by default)      |
+
+Autopay accepts one currency per service ID. The method is offered only for payments in the configured currency;
+for other currencies create another payment method with another service ID.
 
 The shared key is never shown again after saving. Leave the field empty to keep the stored value.
 
@@ -117,6 +121,7 @@ Autopay panel. ISTN is off by default.
 |---------------------------------------|---------|----------------------------------------------------------------------------|
 | `refberg_autopay.http_timeout`        | `15.0`  | Idle timeout of requests to Autopay, in seconds.                           |
 | `refberg_autopay.transaction_validity`| `0`     | Seconds a started transaction can be paid (`ValidityTime`, at most 31 days); `0` keeps the Autopay default of 6 days. |
+| `refberg_autopay.allowed_return_hosts`| `[]`    | Hosts a `return_url` payload of the API may point to, besides the order channel's hostname. |
 
 ```yaml
 parameters:
@@ -213,7 +218,9 @@ Content-Type: application/ld+json
 ```
 
 `responseData.redirect_url` contains the Autopay page. `return_url` is optional when the shop is installed; without it
-the customer returns to the shop's after-pay page. Without the shop, a capture request without `return_url` fails and
+the customer returns to the shop's after-pay page. `return_url` must point to the channel's hostname or to a host
+listed in `refberg_autopay.allowed_return_hosts` (any host is accepted only when the channel has no hostname and the
+list is empty), so the Autopay page cannot send customers to another site. Without the shop, a capture request without `return_url` fails and
 Autopay is not called.
 
 When the customer is back, ask for the status:
@@ -234,12 +241,21 @@ Content-Type: application/ld+json
 |-------------------------------|---------------------------------------------------------------------|
 | `PENDING`                     | unchanged (`new`)                                                   |
 | `SUCCESS`                     | `completed`, once                                                   |
-| `FAILURE`                     | `failed`, only when no other transaction of this payment is open    |
+| `FAILURE`                     | unchanged (`new`): the customer can still pay the same `OrderID`    |
 
-The customer can make several attempts for one `OrderID` on the Autopay page. The `OrderID` is `SUCCESS` when any
-attempt succeeded and `FAILURE` only when all of them failed, so a failed attempt followed by a successful one pays
-the order. When more than one attempt of the same `OrderID` was paid, the payment is completed once and gets the
+The customer can make several attempts for one `OrderID` on the Autopay page, also after a `FAILURE` (Autopay sends
+`FAILURE` right away when the customer leaves the page without choosing a channel, and the link still works). The
+`OrderID` is `SUCCESS` when any attempt succeeded, so the plugin never fails the Sylius payment: a failed payment
+could not be completed by a later attempt, and the money would be taken for an unpaid order. The customer tries again
+from the order page; unpaid orders are cancelled by Sylius (`sylius:cancel-unpaid-orders`), which cancels the Autopay
+transactions too. When more than one attempt of the same `OrderID` was paid, the payment is completed once and gets the
 `duplicate_payment` warning.
+
+Once a transaction completes the payment, the other transactions of that payment that may still be paid (another
+tab, a second click on **Pay**) are cancelled at Autopay.
+
+If Autopay refuses to start a transaction or cannot be reached, the shop shows an error message and the customer can
+try again.
 
 A completed payment never goes back to an earlier state. If a second transaction of the same payment is paid (for
 example after the customer retried in another tab), the Sylius order is not paid twice: the plugin records the
@@ -252,8 +268,9 @@ once the Autopay API confirms it; the plugin sets the payment method back to the
 the `paid_with_previous_payment_method` warning and logs a warning. Refunds of that payment from Sylius therefore reach
 Autopay. A `status` request through the API with the new method checks only transactions of that method's service ID.
 
-ITNs with a missing or invalid hash, or for another service ID, get HTTP 400 and are not stored. ITNs for unknown
-transactions get HTTP 404. When the Autopay API cannot be reached, answers with HTTP 5xx or rejects the plugin
+ITNs with a missing or invalid hash, or for another service ID, get HTTP 400 and are not stored. Correctly signed ITNs
+for transactions no Sylius payment knows (for example started outside Sylius on the same service) are confirmed and
+logged as errors, so Autopay does not repeat them for days. When the Autopay API cannot be reached, answers with HTTP 5xx or rejects the plugin
 credentials, the endpoint answers with HTTP 5xx, so Autopay repeats the ITN. This works only with the synchronous
 payment request transport (`SYLIUS_MESSENGER_TRANSPORT_PAYMENT_REQUEST_DSN=sync://`, the Sylius default): with an
 asynchronous transport the ITN is confirmed before it is processed and Autopay does not repeat it. Other errors
@@ -269,10 +286,12 @@ Autopay processes refunds asynchronously (up to 30 minutes), and a confirmed ref
 recorded from the ISTN, when Autopay sends them, or by `bin/console refberg:autopay:refresh-refunds`
 (option `--days`, default 30).
 
-Sylius marks the payment as refunded right away. If Autopay rejects the refund, the refund payment request is marked
-as failed and an error is logged; if the refund fails later (ISTN `FAILURE` or `CANCELED_*` status), the plugin
-records it as canceled and logs an error. In both cases the payment stays `refunded`; refund the money manually in the
-Autopay panel. Sylius does not retry a failed request automatically, also when Autopay was unavailable.
+Sylius marks the payment as refunded right away. The plugin records the refund before calling Autopay. If Autopay
+cannot be reached (timeout, HTTP 5xx), the refund stays `REQUESTING` and `refberg:autopay:refresh-refunds` requests it
+again with the same `MessageID`, which Autopay never refunds twice. If Autopay refuses the refund, or it fails later
+(ISTN `FAILURE` or `CANCELED_*` status), the plugin records it as canceled and logs an error; the payment stays
+`refunded`, so refund the money manually in the Autopay panel. A canceled refund that Autopay makes after all (for
+example after its support re-runs it) is recorded as done from the ISTN or the status check.
 
 ### Refunds made in the Autopay panel
 
@@ -289,8 +308,7 @@ refuses when it exceeds what is left; the refund request fails and has to be fin
 
 When an Autopay payment is cancelled in Sylius (for example when the order is cancelled), the plugin cancels every
 transaction of that payment that may still be paid (`transactionCancel`). If Autopay reports that a transaction was
-already paid (`CANCELED_PARTIALLY`, `INCORRECT_PAYMENT_STATUS`), the cancel payment request is marked as failed and an
-error is logged; the later ITN records the `payment_completed_after_failure` warning and the payment is not completed.
+already paid, the cancel payment request is marked as failed and an error is logged; the later ITN records the `payment_completed_after_failure` warning and the payment is not completed.
 Refund it in the Autopay panel. Transactions of another Autopay service (started before the customer switched methods)
 cannot be cancelled with the current credentials; they get the `transaction_not_cancelled_at_autopay` warning.
 
@@ -300,7 +318,9 @@ cannot be cancelled with the current credentials; they get the `transaction_not_
 - Retries of ITNs after temporary errors need the `sync://` payment request transport.
 - With an asynchronous transport, set `framework.router.default_uri` to the public shop URL, so the return URL is
   generated correctly.
-- Refunds made in the Autopay panel are synchronized only with ISTN enabled by Autopay.
+- Refunds made in the Autopay panel are synchronized only with ISTN enabled by Autopay. They cannot be read back from
+  the API, so the signed ISTN is trusted, within the paid transaction, its currency and the payment amount.
+- One currency per Autopay service ID (one payment method per currency).
 - Models in which Autopay adds its commission to the transaction amount are not supported.
 - A payment whose method was changed after the redirect to a method outside Autopay and that is then cancelled in Sylius
   is not cancelled at Autopay; check the old transaction in the Autopay panel.

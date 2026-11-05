@@ -14,6 +14,7 @@ use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentLockerInterface;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentStateApplierInterface;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentSynchronizerInterface;
+use Refberg\SyliusAutopayPlugin\Payment\TransactionCancellerInterface;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Bundle\PaymentBundle\Provider\PaymentRequestProviderInterface;
 use function array_filter;
@@ -36,6 +37,7 @@ final readonly class StatusPaymentRequestHandler
         private PaymentRequestProviderInterface $paymentRequestProvider,
         private CredentialsResolverInterface $credentialsResolver,
         private PaymentSynchronizerInterface $synchronizer,
+        private TransactionCancellerInterface $canceller,
         private PaymentLockerInterface $paymentLocker,
         private StateMachineInterface $stateMachine,
         private LoggerInterface $logger = new NullLogger(),
@@ -58,7 +60,7 @@ final readonly class StatusPaymentRequestHandler
             $orderIds = array_filter($details->getOpenOrderIds(), static fn (string $orderId): bool => $details->hasOrderOfService($orderId, $credentials->serviceId));
             foreach (array_slice($orderIds, 0, self::MAX_CHECKED_ORDERS) as $orderId) {
                 if (PaymentStateApplierInterface::RESULT_COMPLETED === $this->synchronizer->synchronize($payment, $orderId, $credentials)) {
-                    $this->restorePaidMethod($payment, $method, $orderId);
+                    $this->onPaymentCompleted($this->canceller, $paymentRequest, $payment, $credentials, $orderId);
                 }
             }
         } catch (AutopayException|InvalidConfigurationException $exception) {

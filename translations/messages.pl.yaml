@@ -11,7 +11,10 @@ refberg_autopay:
             hash_algorithm: Funkcja skrótu
             secret_help: Przechowywany w postaci zaszyfrowanej. Zostaw puste, aby nie zmieniać obecnej wartości.
             notify_url: 'Adres ITN do przekazania Autopay dla tego identyfikatora serwisu:'
+            currency: Waluta serwisu
+            currency_help: Autopay obsługuje jedną walutę na identyfikator serwisu; metoda jest oferowana tylko dla płatności w tej walucie.
     ui:
+        payment_start_failed: Nie udało się rozpocząć płatności w Autopay. Spróbuj ponownie albo wybierz inną metodę płatności.
         remote_id: RemoteID
         transactions: 'transakcje: %count%'
         refund: Zwrot

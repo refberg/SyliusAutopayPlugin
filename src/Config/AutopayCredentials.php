@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Refberg\SyliusAutopayPlugin\Config;
 
 use LogicException;
+use Refberg\SyliusAutopayPlugin\AutopayGateway;
 use SensitiveParameter;
 
 final readonly class AutopayCredentials
@@ -15,6 +16,7 @@ final readonly class AutopayCredentials
         public string $sharedKey,
         public HashAlgorithm $hashAlgorithm,
         public Environment $environment,
+        public string $currency = AutopayGateway::DEFAULT_CURRENCY,
     ) {
     }
 
@@ -30,6 +32,7 @@ final readonly class AutopayCredentials
             'sharedKey' => '***',
             'hashAlgorithm' => $this->hashAlgorithm->value,
             'environment' => $this->environment->value,
+            'currency' => $this->currency,
         ];
     }
 

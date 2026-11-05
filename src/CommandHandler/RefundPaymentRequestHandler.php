@@ -7,7 +7,9 @@ namespace Refberg\SyliusAutopayPlugin\CommandHandler;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Refberg\SyliusAutopayPlugin\Api\AutopayClientInterface;
-use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayException;
+use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayApiException;
+use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayTransportException;
+use Refberg\SyliusAutopayPlugin\Api\Model\RefundCreated;
 use Refberg\SyliusAutopayPlugin\Command\RefundPaymentRequest;
 use Refberg\SyliusAutopayPlugin\Config\CredentialsResolverInterface;
 use Refberg\SyliusAutopayPlugin\Config\InvalidConfigurationException;
@@ -99,12 +101,24 @@ final readonly class RefundPaymentRequestHandler
         $currency = (string) $payment->getCurrencyCode();
         $messageId = str_replace('-', '', strtolower((string) $paymentRequest->getId()));
 
+        // Recorded first: when Autopay cannot be reached, refberg:autopay:refresh-refunds requests it again
+        // with the same MessageID, which Autopay never refunds twice.
+        $details->recordRefund($messageId, $remoteId, RefundCreated::STATUS_REQUESTING, $amount, $currency);
+        $details->save();
+
         try {
             $refund = $this->client->createRefund($credentials, $remoteId, $amount, $currency, $messageId);
-        } catch (AutopayException $exception) {
-            $this->logger->error('Autopay refund request failed; refund has to be handled manually.', [
+        } catch (AutopayTransportException|AutopayApiException $exception) {
+            $retried = !$exception instanceof AutopayApiException || $exception->isTransient();
+            if (!$retried) {
+                $details->updateRefundStatus($messageId, RefundCreated::STATUS_CANCELED);
+                $details->save();
+            }
+
+            $this->logger->error($retried ? 'Autopay refund request failed; refberg:autopay:refresh-refunds will request it again.' : 'Autopay refused the refund; it has to be handled manually.', [
                 'payment_id' => $payment->getId(),
                 'remote_id' => $remoteId,
+                'message_id' => $messageId,
                 'reason' => $exception->getMessage(),
             ]);
             $this->failRequest($paymentRequest, $exception->getMessage());
@@ -112,7 +126,7 @@ final readonly class RefundPaymentRequestHandler
             return;
         }
 
-        $details->recordRefund($refund->messageId, $remoteId, $refund->status, $amount, $currency);
+        $details->updateRefundStatus($messageId, $refund->status);
         $details->save();
 
         $this->completeRequest($paymentRequest, [

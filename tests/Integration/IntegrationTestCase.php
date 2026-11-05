@@ -131,6 +131,44 @@ abstract class IntegrationTestCase extends WebTestCase
     }
 
     /**
+     * Another placed order of the same channel and Autopay method as createPlacedOrder().
+     */
+    protected function createSecondPlacedOrder(string $number, string $token, int $amount = 1500): PaymentInterface
+    {
+        $first = self::service(ObjectRepository::class, 'sylius.repository.order')->findOneBy(['tokenValue' => 'order-token']);
+        self::assertInstanceOf(OrderInterface::class, $first);
+        $method = $first->getLastPayment()?->getMethod();
+        self::assertInstanceOf(PaymentMethodInterface::class, $method);
+
+        $order = $this->factory('order')->createNew();
+        self::assertInstanceOf(OrderInterface::class, $order);
+        $order->setChannel($first->getChannel());
+        $order->setCurrencyCode('PLN');
+        $order->setLocaleCode('en_US');
+        $order->setCustomer($first->getCustomer());
+        $order->setNumber($number);
+        $order->setTokenValue($token);
+        $order->setCheckoutState('completed');
+        $order->setState('new');
+        $order->setPaymentState('awaiting_payment');
+        $order->setCheckoutCompletedAt(new DateTime());
+
+        $payment = $this->factory('payment')->createNew();
+        self::assertInstanceOf(PaymentInterface::class, $payment);
+        $payment->setMethod($method);
+        $payment->setAmount($amount);
+        $payment->setCurrencyCode('PLN');
+        $payment->setState('new');
+        $order->addPayment($payment);
+
+        $this->em()->persist($order);
+        $this->em()->persist($payment);
+        $this->em()->flush();
+
+        return $payment;
+    }
+
+    /**
      * Creates an Autopay payment method, persisted but not flushed.
      */
     protected function createAutopayMethod(string $code, string $serviceId, string $sharedKey): PaymentMethodInterface
@@ -183,9 +221,9 @@ abstract class IntegrationTestCase extends WebTestCase
     /**
      * Goes through the shop "pay" flow and returns the Autopay page URL the customer is redirected to.
      */
-    protected function payInShop(): string
+    protected function payInShop(string $token = 'order-token'): string
     {
-        $this->client->request('GET', '/en_US/order/order-token/pay');
+        $this->client->request('GET', '/en_US/order/' . $token . '/pay');
         $response = $this->client->getResponse();
         self::assertTrue($response->isRedirect(), (string) $response->getContent());
 

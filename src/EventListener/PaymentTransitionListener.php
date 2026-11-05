@@ -16,6 +16,8 @@ use Symfony\Component\Workflow\Event\CompletedEvent;
 /**
  * Turns a completed "sylius_payment" transition of an Autopay payment into a payment request
  * (e.g. "refund" → ACTION_REFUND, "cancel" → ACTION_CANCEL) and dispatches it.
+ *
+ * @internal
  */
 final readonly class PaymentTransitionListener
 {

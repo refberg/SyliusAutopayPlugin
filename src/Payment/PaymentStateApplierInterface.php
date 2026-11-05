@@ -16,8 +16,6 @@ interface PaymentStateApplierInterface
 {
     public const RESULT_COMPLETED = 'completed';
 
-    public const RESULT_FAILED = 'failed';
-
     public const RESULT_UNCHANGED = 'unchanged';
 
     public const RESULT_WARNING = 'warning';

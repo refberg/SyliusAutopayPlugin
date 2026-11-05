@@ -47,7 +47,7 @@ final class AdminGatewayConfigurationTest extends IntegrationTestCase
         $crawler = $this->client->request('GET', '/admin/payment-methods/new/refberg_autopay');
 
         self::assertResponseIsSuccessful();
-        foreach (['environment', 'service_id', 'shared_key', 'hash_algorithm'] as $field) {
+        foreach (['environment', 'service_id', 'shared_key', 'hash_algorithm', 'currency'] as $field) {
             self::assertCount(1, $crawler->filterXPath(sprintf('//*[@name="%s"]', sprintf(self::FIELD, $field))), $field);
         }
     }

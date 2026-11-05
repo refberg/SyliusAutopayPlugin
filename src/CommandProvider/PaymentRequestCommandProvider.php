@@ -10,6 +10,8 @@ use Sylius\Component\Payment\Model\PaymentRequestInterface;
 
 /**
  * Maps a payment request to one of the plugin commands; one service per action.
+ *
+ * @internal
  */
 final readonly class PaymentRequestCommandProvider implements PaymentRequestCommandProviderInterface
 {

@@ -11,7 +11,10 @@ refberg_autopay:
             hash_algorithm: Hash algorithm
             secret_help: Stored encrypted. Leave empty to keep the current value.
             notify_url: 'ITN address to give Autopay for this service ID:'
+            currency: Currency of the service
+            currency_help: Autopay accepts one currency per service ID; the method is offered only for payments in it.
     ui:
+        payment_start_failed: Autopay could not start the payment. Please try again or choose another payment method.
         remote_id: RemoteID
         transactions: '%count% transactions'
         refund: Refund

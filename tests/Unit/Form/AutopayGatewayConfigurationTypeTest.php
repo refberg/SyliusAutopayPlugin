@@ -21,6 +21,7 @@ final class AutopayGatewayConfigurationTypeTest extends TestCase
         'service_id' => '100001',
         'shared_key' => 'stored-shared-key',
         'hash_algorithm' => 'sha256',
+        'currency' => 'PLN',
     ];
 
     private FormFactoryInterface $factory;
@@ -44,7 +45,7 @@ final class AutopayGatewayConfigurationTypeTest extends TestCase
     {
         $form = $this->factory->create(AutopayGatewayConfigurationType::class, self::STORED);
 
-        $form->submit(['environment' => 'sandbox', 'service_id' => '200002', 'shared_key' => '   ', 'hash_algorithm' => 'sha512']);
+        $form->submit(['environment' => 'sandbox', 'service_id' => '200002', 'shared_key' => '   ', 'hash_algorithm' => 'sha512', 'currency' => 'EUR']);
 
         self::assertTrue($form->isSynchronized());
         self::assertSame([
@@ -52,6 +53,7 @@ final class AutopayGatewayConfigurationTypeTest extends TestCase
             'service_id' => '200002',
             'shared_key' => 'stored-shared-key',
             'hash_algorithm' => 'sha512',
+            'currency' => 'EUR',
         ], $form->getData());
     }
 
@@ -70,7 +72,7 @@ final class AutopayGatewayConfigurationTypeTest extends TestCase
 
         $form->submit(['service_id' => '1', 'shared_key' => 'k']);
 
-        self::assertSame(['environment' => 'sandbox', 'service_id' => '1', 'shared_key' => 'k', 'hash_algorithm' => 'sha256'], $form->getData());
+        self::assertSame(['environment' => 'sandbox', 'service_id' => '1', 'shared_key' => 'k', 'hash_algorithm' => 'sha256', 'currency' => 'PLN'], $form->getData());
     }
 
     public function test_complete_configuration_is_valid_in_the_admin_validation_group(): void
@@ -101,6 +103,7 @@ final class AutopayGatewayConfigurationTypeTest extends TestCase
         yield 'empty shared key' => ['shared_key', ''];
         yield 'unknown hash algorithm' => ['hash_algorithm', 'md5'];
         yield 'unknown environment' => ['environment', 'staging'];
+        yield 'unsupported currency' => ['currency', 'CZK'];
     }
 
     #[DataProvider('invalidFields')]

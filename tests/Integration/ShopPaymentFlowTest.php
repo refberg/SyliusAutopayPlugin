@@ -6,6 +6,7 @@ namespace Tests\Refberg\SyliusAutopayPlugin\Integration;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\TestWith;
+use Refberg\SyliusAutopayPlugin\OrderPay\CaptureHttpResponseProvider;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Component\Core\Model\PaymentInterface;
@@ -14,6 +15,7 @@ use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use Sylius\Component\Payment\PaymentRequestTransitions;
 use Sylius\Component\Payment\PaymentTransitions;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\Session\FlashBagAwareSessionInterface;
 use Tests\Refberg\SyliusAutopayPlugin\Support\FakeAutopay;
 use function base64_encode;
 use function http_build_query;
@@ -46,6 +48,27 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
         $details = $this->details($payment);
         self::assertSame($orderId, $details->getCurrentOrderId());
         self::assertTrue($details->hasOrderOfService($orderId, FakeAutopay::SERVICE_ID));
+    }
+
+    public function test_failed_start_shows_an_error_and_lets_the_customer_try_again(): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->autopay->failNextRequest(503);
+
+        $this->client->request('GET', '/en_US/order/order-token/pay');
+        $this->client->request('GET', (string) $this->client->getResponse()->headers->get('Location'));
+
+        $response = $this->client->getResponse();
+        self::assertTrue($response->isRedirect());
+        self::assertStringContainsString('/order/after-pay/', (string) $response->headers->get('Location'));
+        $session = $this->client->getRequest()->getSession();
+        self::assertInstanceOf(FlashBagAwareSessionInterface::class, $session);
+        self::assertSame([CaptureHttpResponseProvider::FLASH_CAPTURE_FAILED], $session->getFlashBag()->peek('error'));
+        self::assertSame('new', $this->reloadPayment($payment)->getState());
+
+        // The next attempt starts a new transaction.
+        $this->payInShop();
+        self::assertCount(1, $this->autopay->orderIds());
     }
 
     public function test_opening_the_pay_page_again_reuses_the_autopay_transaction(): void
@@ -174,17 +197,22 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
         self::assertSame('new', $this->reloadPayment($payment)->getState());
     }
 
-    public function test_itn_for_an_unknown_order_id_is_rejected(): void
+    public function test_itn_for_an_unknown_order_id_is_confirmed_and_ignored(): void
     {
         $payment = $this->createPlacedOrder();
         $this->payInShop();
         $paymentId = $payment->getId();
         self::assertIsInt($paymentId);
 
-        self::assertSame(Response::HTTP_NOT_FOUND, $this->notify(FakeAutopay::itn(['orderID' => 'FOREIGN', 'paymentStatus' => 'SUCCESS']))->getStatusCode());
-        self::assertSame(Response::HTTP_NOT_FOUND, $this->notify(FakeAutopay::itn(['orderID' => '000000001-' . $paymentId . '-00000000', 'paymentStatus' => 'SUCCESS']))->getStatusCode());
+        // Confirmed, so Autopay does not repeat it for days, but neither stored nor processed.
+        $response = $this->notify(FakeAutopay::itn(['orderID' => 'FOREIGN', 'paymentStatus' => 'SUCCESS']));
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertSame(self::confirmation('FOREIGN', 'CONFIRMED'), $response->getContent());
+        self::assertSame(Response::HTTP_OK, $this->notify(FakeAutopay::itn(['orderID' => '000000001-' . $paymentId . '-00000000', 'paymentStatus' => 'SUCCESS']))->getStatusCode());
 
         self::assertSame('new', $this->reloadPayment($payment)->getState());
+        self::assertCount(0, $this->paymentRequests(PaymentRequestInterface::ACTION_NOTIFY));
+        self::assertCount(0, $this->autopay->requests('POST', '#^/webapi/transactionStatus$#'));
     }
 
     public function test_itn_for_a_method_without_credentials_returns_503_so_autopay_retries(): void
@@ -256,16 +284,62 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
         self::assertSame('completed', $this->reloadPayment($payment)->getState());
     }
 
-    public function test_failed_transaction_fails_the_payment(): void
+    public function test_failed_transaction_keeps_the_payment_open_and_a_later_attempt_pays_it(): void
     {
         $payment = $this->createPlacedOrder();
         $this->payInShop();
         $orderId = $this->autopay->lastOrderId();
+        // The customer left the Autopay page without choosing a channel.
         $this->autopay->setStatus($orderId, 'FAILURE');
 
         self::assertSame(Response::HTTP_OK, $this->notifyOrder($orderId)->getStatusCode());
+        self::assertSame('new', $this->reloadPayment($payment)->getState());
 
-        self::assertSame('failed', $this->reloadPayment($payment)->getState());
+        // Later the customer pays the same OrderID, e.g. from the browser history.
+        $this->autopay->addAttempt($orderId, 'SUCCESS');
+        self::assertSame(Response::HTTP_OK, $this->notifyOrder($orderId)->getStatusCode());
+
+        $payment = $this->reloadPayment($payment);
+        self::assertSame('completed', $payment->getState());
+        self::assertSame('paid', $payment->getOrder()?->getPaymentState());
+        self::assertSame([], PaymentDetails::of($payment)->warnings());
+    }
+
+    public function test_other_open_transactions_are_cancelled_once_the_payment_is_paid(): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->payInShop();
+        $firstOrderId = $this->autopay->lastOrderId();
+        // A second attempt in another tab.
+        $this->finalizeCaptureRequests(PaymentRequestTransitions::TRANSITION_FAIL);
+        $this->payInShop();
+        $secondOrderId = $this->autopay->lastOrderId();
+
+        $this->autopay->setStatus($secondOrderId, 'SUCCESS');
+        self::assertSame(Response::HTTP_OK, $this->notifyOrder($secondOrderId)->getStatusCode());
+
+        self::assertSame('completed', $this->reloadPayment($payment)->getState());
+        self::assertSame([$firstOrderId], $this->autopay->cancelRequests());
+        self::assertSame('FAILURE', $this->autopay->transaction($firstOrderId)['attempts'][0]['paymentStatus']);
+        self::assertSame('FAILURE', $this->details($payment)->getOrderStatus($firstOrderId));
+    }
+
+    public function test_payment_started_by_another_method_of_the_same_service_keeps_its_method(): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->payInShop();
+        $orderId = $this->autopay->lastOrderId();
+        // A second Sylius method on the same service (e.g. for another channel) receives the service's ITNs.
+        $this->createAutopayMethod('AUTOPAY_B2B', FakeAutopay::SERVICE_ID, FakeAutopay::SHARED_KEY);
+        $this->em()->flush();
+        $this->autopay->setStatus($orderId, 'SUCCESS');
+
+        self::assertSame(Response::HTTP_OK, $this->notify($this->autopay->itnBody($orderId), 'AUTOPAY_B2B')->getStatusCode());
+
+        $payment = $this->reloadPayment($payment);
+        self::assertSame('completed', $payment->getState());
+        self::assertSame(self::METHOD_CODE, $payment->getMethod()?->getCode());
+        self::assertSame([], PaymentDetails::of($payment)->warnings());
     }
 
     public function test_successful_retry_on_the_autopay_page_after_a_failed_attempt_pays_the_order(): void
@@ -490,7 +564,9 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
         $this->autopay->setStatus($orderId, 'SUCCESS');
 
         self::assertSame(Response::HTTP_BAD_REQUEST, $this->notify($this->autopay->itnBody($orderId), 'AUTOPAY2')->getStatusCode());
-        self::assertSame(Response::HTTP_NOT_FOUND, $this->notify($this->autopay->itnBody($orderId, sharedKey: 'other-shared-key', serviceId: '999999'), 'AUTOPAY2')->getStatusCode());
+        // Signed by the other service: confirmed, but its OrderIDs are not this payment's.
+        self::assertSame(Response::HTTP_OK, $this->notify($this->autopay->itnBody($orderId, sharedKey: 'other-shared-key', serviceId: '999999'), 'AUTOPAY2')->getStatusCode());
+        self::assertCount(0, $this->paymentRequests(PaymentRequestInterface::ACTION_NOTIFY));
 
         self::assertSame('new', $this->reloadPayment($payment)->getState());
     }
