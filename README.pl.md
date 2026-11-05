@@ -93,6 +93,10 @@ W panelu administracyjnym wybierz **Konfiguracja → Metody płatności → Utw�
 | Identyfikator serwisu | `ServiceID`                                              |
 | Klucz współdzielony | klucz współdzielony serwisu                                |
 | Funkcja skrótu    | funkcja skrótu serwisu (domyślnie SHA-256)                   |
+| Waluta serwisu    | jedyna waluta serwisu (domyślnie PLN)                        |
+
+Autopay obsługuje jedną walutę na identyfikator serwisu. Metoda jest oferowana tylko dla płatności w ustawionej walucie;
+dla innych walut utwórz kolejną metodę płatności z innym identyfikatorem serwisu.
 
 Klucz współdzielony nie jest pokazywany po zapisaniu. Zostaw pole puste, aby nie zmieniać zapisanej wartości.
 
@@ -110,6 +114,7 @@ Domyślnie ISTN jest wyłączone.
 |----------------------------------------|-----------|---------------------------------------------------------------------------|
 | `refberg_autopay.http_timeout`         | `15.0`    | Limit bezczynności zapytań do Autopay, w sekundach.                       |
 | `refberg_autopay.transaction_validity` | `0`       | Ile sekund można opłacić rozpoczętą transakcję (`ValidityTime`, maks. 31 dni); `0` zostawia domyślne 6 dni Autopay. |
+| `refberg_autopay.allowed_return_hosts` | `[]`      | Hosty, na które może wskazywać `return_url` z API, oprócz hosta kanału zamówienia. |
 
 ```yaml
 parameters:
@@ -190,11 +195,18 @@ Content-Type: application/ld+json
 |--------------------------|------------------------------------------------------------------------|
 | `PENDING`                | bez zmian (`new`)                                                      |
 | `SUCCESS`                | `completed`, jeden raz                                                 |
-| `FAILURE`                | `failed`, tylko gdy żadna inna transakcja tej płatności nie jest otwarta |
+| `FAILURE`                | bez zmian (`new`): klient może jeszcze opłacić ten sam `OrderID`        |
 
 Klient może na stronie Autopay ponowić próbę dla tego samego `OrderID`. `OrderID` ma status `SUCCESS`, gdy którakolwiek
-próba się powiodła, a `FAILURE` tylko wtedy, gdy wszystkie się nie powiodły. Gdy opłacono więcej niż jedną próbę tego
-samego `OrderID`, płatność jest kończona raz i dostaje ostrzeżenie `duplicate_payment`.
+próba się powiodła. Autopay wysyła `FAILURE` od razu, gdy klient opuści stronę bez wyboru kanału, a link nadal działa,
+więc plugin nigdy nie oznacza płatności jako nieudanej: nieudanej płatności nie dałoby się zakończyć późniejszą wpłatą
+i pieniądze zostałyby pobrane za nieopłacone zamówienie. Klient ponawia płatność ze strony zamówienia; nieopłacone
+zamówienia anuluje Sylius (`sylius:cancel-unpaid-orders`), co anuluje też transakcje w Autopay. Gdy opłacono więcej niż
+jedną próbę tego samego `OrderID`, płatność jest kończona raz i dostaje ostrzeżenie `duplicate_payment`.
+
+Gdy transakcja opłaci płatność, pozostałe transakcje tej płatności, które można jeszcze opłacić (druga karta, drugie
+kliknięcie **Zapłać**), są anulowane w Autopay. Gdy Autopay odmówi rozpoczęcia transakcji albo jest niedostępny, sklep
+pokazuje komunikat o błędzie i klient może spróbować ponownie.
 
 Opłacona płatność nigdy nie wraca do wcześniejszego stanu. Gdy opłacona zostanie druga transakcja tej samej płatności,
 zamówienie nie jest opłacane drugi raz: plugin zapisuje ostrzeżenie `duplicate_payment` w szczegółach płatności
@@ -205,8 +217,8 @@ z płatnością. Jej ITN albo powrót klienta z Autopay kończy płatność, gdy
 opłaconą metodę Autopay, zapisuje ostrzeżenie `paid_with_previous_payment_method` i loguje ostrzeżenie, więc zwroty
 z Syliusa trafiają do Autopay. Żądanie `status` przez API z nową metodą sprawdza tylko transakcje jej identyfikatora serwisu.
 
-ITN bez poprawnego hasha albo innego serwisu dostaje HTTP 400 i nie jest zapisywany; ITN nieznanej transakcji dostaje
-HTTP 404. Gdy API Autopay jest niedostępne, odpowiada HTTP 5xx albo odrzuca dane dostępowe pluginu, endpoint odpowiada
+ITN bez poprawnego hasha albo innego serwisu dostaje HTTP 400 i nie jest zapisywany. Poprawnie podpisany ITN transakcji,
+której nie zna żadna płatność Syliusa, jest potwierdzany i logowany jako błąd, żeby Autopay nie ponawiał go przez dni. Gdy API Autopay jest niedostępne, odpowiada HTTP 5xx albo odrzuca dane dostępowe pluginu, endpoint odpowiada
 HTTP 5xx i Autopay ponawia ITN. **Działa to tylko przy synchronicznym transporcie payment requestów**
 (`SYLIUS_MESSENGER_TRANSPORT_PAYMENT_REQUEST_DSN=sync://`, domyślnie w Syliusie): przy transporcie asynchronicznym ITN jest
 potwierdzany przed przetworzeniem i Autopay go nie ponowi. Pozostałe błędy (np. niezgodna kwota) są trwałe: ITN jest
@@ -222,10 +234,12 @@ Autopay realizuje zwroty asynchronicznie (do 30 minut), a przyjęty zwrot może 
 zapisuje z ISTN, jeśli Autopay je wysyła, albo odczytuje poleceniem `bin/console refberg:autopay:refresh-refunds`
 (opcja `--days`, domyślnie 30).
 
-Sylius od razu oznacza płatność jako zwróconą. Jeśli Autopay odrzuci zwrot, payment request zwrotu jest oznaczany jako
-nieudany i logowany jest błąd; jeśli zwrot nie uda się później (ISTN `FAILURE` albo status `CANCELED_*`), plugin zapisuje
-go jako anulowany i loguje błąd. W obu przypadkach płatność pozostaje `refunded` – zwróć pieniądze ręcznie w panelu
-Autopay. Sylius nie ponawia nieudanego żądania automatycznie, także gdy Autopay był niedostępny.
+Sylius od razu oznacza płatność jako zwróconą. Plugin zapisuje zwrot przed wywołaniem Autopay. Gdy Autopay jest
+niedostępny (timeout, HTTP 5xx), zwrot zostaje w stanie `REQUESTING`, a `refberg:autopay:refresh-refunds` zleca go
+ponownie z tym samym `MessageID`, którego Autopay nigdy nie realizuje dwa razy. Jeśli Autopay odrzuci zwrot albo zwrot nie
+uda się później (ISTN `FAILURE` albo status `CANCELED_*`), plugin zapisuje go jako anulowany i loguje błąd; płatność
+pozostaje `refunded` – zwróć pieniądze ręcznie w panelu Autopay. Anulowany zwrot, który Autopay jednak zrealizuje
+(np. po ponowieniu przez support), zostaje zapisany jako zrealizowany z ISTN albo sprawdzenia statusu.
 
 ### Zwroty zrobione w panelu Autopay
 
@@ -241,8 +255,8 @@ przekracza to, co zostało; żądanie kończy się błędem i zwrot trzeba doko�
 ### Anulowanie
 
 Gdy płatność Autopay zostanie anulowana w Syliusie (np. przy anulowaniu zamówienia), plugin anuluje każdą jej transakcję,
-którą można jeszcze opłacić (`transactionCancel`). Jeśli Autopay zgłosi, że transakcja była już opłacona
-(`CANCELED_PARTIALLY`, `INCORRECT_PAYMENT_STATUS`), payment request anulowania jest oznaczany jako nieudany i logowany jest
+którą można jeszcze opłacić (`transactionCancel`). Jeśli Autopay zgłosi, że transakcja była już opłacona,
+payment request anulowania jest oznaczany jako nieudany i logowany jest
 błąd; późniejszy ITN zapisuje ostrzeżenie `payment_completed_after_failure`, a płatność nie jest kończona. Zwróć ją
 w panelu Autopay. Transakcji innego serwisu Autopay (rozpoczętych przed zmianą metody) nie da się anulować bieżącymi
 danymi; dostają ostrzeżenie `transaction_not_cancelled_at_autopay`.
@@ -253,7 +267,9 @@ danymi; dostają ostrzeżenie `transaction_not_cancelled_at_autopay`.
 - Ponawianie ITN-ów po błędach przejściowych wymaga transportu `sync://`.
 - Przy transporcie asynchronicznym ustaw `framework.router.default_uri` na publiczny adres sklepu, żeby adres powrotu
   był poprawny.
-- Zwroty z panelu Autopay są synchronizowane tylko przy ISTN włączonym przez Autopay.
+- Zwroty z panelu Autopay są synchronizowane tylko przy ISTN włączonym przez Autopay. Nie da się ich odczytać z API,
+  więc plugin ufa podpisanemu ISTN w granicach opłaconej transakcji, jej waluty i kwoty płatności.
+- Jedna waluta na identyfikator serwisu Autopay (jedna metoda płatności na walutę).
 - Modele, w których Autopay dolicza prowizję do kwoty transakcji, nie są obsługiwane.
 - Płatność, której metodę po przekierowaniu zmieniono na metodę spoza Autopay i którą potem anulowano w Syliusie,
   nie jest anulowana w Autopay; sprawdź starą transakcję w panelu Autopay.

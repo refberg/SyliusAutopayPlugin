@@ -19,12 +19,15 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
+use Throwable;
 use function is_numeric;
 use function sprintf;
 
 /**
- * Reads the status of Autopay refunds still in progress. Autopay does not notify about refunds,
- * so run it periodically (e.g. every hour from cron).
+ * Reads the status of Autopay refunds still in progress and requests again those that never reached Autopay.
+ * Run it periodically (e.g. every hour from cron); with ISTN enabled it is a fallback for missing notifications.
+ *
+ * Each payment is processed in its own transaction, so a failing payment does not stop the others.
  *
  * @internal
  */
@@ -73,14 +76,27 @@ final class RefreshRefundsCommand extends Command
 
         $changed = 0;
         $failed = 0;
+        $connection = $this->entityManager->getConnection();
         foreach ($ids as $id) {
+            $connection->beginTransaction();
+
             try {
-                $changed += $this->entityManager->wrapInTransaction(fn (): int => $this->refresh($id));
+                $changed += $this->refresh($id);
+                $this->entityManager->flush();
+                $connection->commit();
             } catch (AutopayException|InvalidConfigurationException $exception) {
+                // Statuses read before the failure are kept.
+                $this->entityManager->flush();
+                $connection->commit();
                 ++$failed;
                 $output->writeln(sprintf('<error>Payment %s: %s</error>', (string) $id, $exception->getMessage()));
+            } catch (Throwable $exception) {
+                $connection->rollBack();
+
+                throw $exception;
+            } finally {
+                $this->entityManager->clear();
             }
-            $this->entityManager->clear();
         }
 
         $output->writeln(sprintf('Autopay refunds updated: %d.', $changed));

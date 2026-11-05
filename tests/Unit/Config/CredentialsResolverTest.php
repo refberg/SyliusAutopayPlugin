@@ -25,23 +25,26 @@ final class CredentialsResolverTest extends TestCase
         'service_id' => ' 100001 ',
         'shared_key' => 'secret-key',
         'hash_algorithm' => 'sha512',
+        'currency' => 'eur',
     ];
 
     public function test_it_resolves_credentials(): void
     {
         $credentials = (new CredentialsResolver())->resolve(self::method(self::CONFIG));
 
-        self::assertEquals(new AutopayCredentials('100001', 'secret-key', HashAlgorithm::Sha512, Environment::Production), $credentials);
+        self::assertEquals(new AutopayCredentials('100001', 'secret-key', HashAlgorithm::Sha512, Environment::Production, 'EUR'), $credentials);
         self::assertSame('https://pay.autopay.eu', $credentials->environment->baseUrl());
         self::assertSame('https://testpay.autopay.eu', Environment::Sandbox->baseUrl());
     }
 
-    public function test_missing_hash_algorithm_defaults_to_sha256(): void
+    public function test_missing_hash_algorithm_and_currency_default_to_the_autopay_defaults(): void
     {
         $config = self::CONFIG;
-        unset($config['hash_algorithm']);
+        unset($config['hash_algorithm'], $config['currency']);
 
-        self::assertSame(HashAlgorithm::Sha256, (new CredentialsResolver())->resolve(self::method($config))->hashAlgorithm);
+        $credentials = (new CredentialsResolver())->resolve(self::method($config));
+        self::assertSame(HashAlgorithm::Sha256, $credentials->hashAlgorithm);
+        self::assertSame('PLN', $credentials->currency);
     }
 
     public function test_it_supports_only_the_autopay_factory(): void
@@ -66,6 +69,7 @@ final class CredentialsResolverTest extends TestCase
         yield 'no shared key' => [['shared_key' => '  '] + self::CONFIG];
         yield 'array shared key' => [['shared_key' => ['x']] + self::CONFIG];
         yield 'md5' => [['hash_algorithm' => 'md5'] + self::CONFIG];
+        yield 'unsupported currency' => [['currency' => 'CZK'] + self::CONFIG];
     }
 
     /**

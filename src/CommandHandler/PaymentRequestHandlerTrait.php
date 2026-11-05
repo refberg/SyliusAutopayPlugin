@@ -6,12 +6,17 @@ namespace Refberg\SyliusAutopayPlugin\CommandHandler;
 
 use LogicException;
 use Psr\Log\LoggerInterface;
+use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayException;
+use Refberg\SyliusAutopayPlugin\Config\AutopayCredentials;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
+use Refberg\SyliusAutopayPlugin\Payment\TransactionCancellerInterface;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Component\Core\Model\PaymentInterface;
 use Sylius\Component\Payment\Model\PaymentMethodInterface;
 use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use Sylius\Component\Payment\PaymentRequestTransitions;
+use function hash;
+use function substr;
 
 /**
  * @internal
@@ -44,11 +49,67 @@ trait PaymentRequestHandlerTrait
     }
 
     /**
-     * Refunds from Sylius use the payment's method, so it must be the Autopay method that was paid.
+     * After an OrderID completed the payment: restores the paid method and cancels the other OrderIDs
+     * of the payment that could still be paid (another tab, a double click), so the order is not paid twice.
+     */
+    private function onPaymentCompleted(
+        TransactionCancellerInterface $canceller,
+        PaymentRequestInterface $paymentRequest,
+        PaymentInterface $payment,
+        AutopayCredentials $credentials,
+        string $orderId,
+    ): void {
+        $this->restorePaidMethod($payment, $paymentRequest->getMethod(), $orderId);
+
+        $details = PaymentDetails::of($payment);
+        foreach ($details->getOpenOrderIds() as $openOrderId) {
+            if (!$details->hasOrderOfService($openOrderId, $credentials->serviceId)) {
+                continue;
+            }
+
+            try {
+                $result = $canceller->cancel($payment, $openOrderId, self::messageId($paymentRequest, $openOrderId), $credentials);
+            } catch (AutopayException $exception) {
+                $result = $exception->getMessage();
+            }
+
+            if (TransactionCancellerInterface::RESULT_CANCELLED !== $result) {
+                $this->logger->warning('Could not cancel another Autopay transaction of a paid payment; check it in the Autopay panel.', [
+                    'payment_id' => $payment->getId(),
+                    'order_id' => $openOrderId,
+                    'reason' => $result,
+                ]);
+            }
+        }
+    }
+
+    /**
+     * MessageID of a call made for one OrderID while handling a payment request (32 hex characters).
+     */
+    private static function messageId(PaymentRequestInterface $paymentRequest, string $orderId): string
+    {
+        return substr(hash('sha256', $paymentRequest->getId() . '|' . $orderId), 0, 32);
+    }
+
+    /**
+     * Refunds from Sylius use the payment's method, so it must be the Autopay method that was paid:
+     * the one that started the OrderID. With several Sylius methods on one service ID, the ITN address
+     * can be another method's, so nothing is changed when the payment already has the method that started it.
      */
     private function restorePaidMethod(PaymentInterface $payment, PaymentMethodInterface $method, string $orderId): void
     {
-        if ($payment->getMethod() === $method) {
+        $startedWith = PaymentDetails::of($payment)->getMethodCode($orderId);
+        if ($payment->getMethod() === $method || (null !== $startedWith && $payment->getMethod()?->getCode() === $startedWith)) {
+            return;
+        }
+
+        if (null !== $startedWith && $method->getCode() !== $startedWith) {
+            $this->logger->warning('Autopay paid the payment with a method other than the current one; check the payment method.', [
+                'payment_id' => $payment->getId(),
+                'order_id' => $orderId,
+                'started_with_method' => $startedWith,
+            ]);
+
             return;
         }
 

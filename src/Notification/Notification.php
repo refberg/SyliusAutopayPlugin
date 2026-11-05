@@ -20,6 +20,13 @@ final readonly class Notification
 
     public const TYPE_SETTLEMENT = 'settlement';
 
+    /** ISTN transferStatus values. */
+    public const TRANSFER_PENDING = 'PENDING';
+
+    public const TRANSFER_SUCCESS = 'SUCCESS';
+
+    public const TRANSFER_FAILURE = 'FAILURE';
+
     public function __construct(
         public string $type,
         public string $serviceId,

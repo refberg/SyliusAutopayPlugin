@@ -17,7 +17,7 @@ use function is_string;
  * Typed access to the Autopay data stored in Payment::$details[AutopayGateway::DETAILS_KEY].
  *
  * Shape:
- *   orders:             map OrderID => {service_id, remote_id, status, amount, currency}
+ *   orders:             map OrderID => {service_id, method_code, remote_id, status, amount, currency}
  *   current_order_id:   OrderID started most recently for this payment
  *   completed_order_id: OrderID that completed this payment
  *   refunds:            map MessageID => {status, amount, currency, remote_id, remote_out_id?};
@@ -58,11 +58,12 @@ final class PaymentDetails
         $this->payment->setDetails($details);
     }
 
-    public function addOrder(string $orderId, string $serviceId, string $remoteId, int $amount, string $currency): void
+    public function addOrder(string $orderId, string $serviceId, string $remoteId, int $amount, string $currency, ?string $methodCode = null): void
     {
         $orders = $this->orders();
         $orders[$orderId] = [
             'service_id' => $serviceId,
+            'method_code' => $methodCode,
             'remote_id' => $remoteId,
             'status' => AutopayTransaction::STATUS_PENDING,
             'amount' => $amount,
@@ -85,6 +86,16 @@ final class PaymentDetails
         return $this->hasOrder($orderId) && ($this->orders()[$orderId]['service_id'] ?? null) === $serviceId;
     }
 
+    /**
+     * Code of the Sylius payment method that started the OrderID.
+     */
+    public function getMethodCode(string $orderId): ?string
+    {
+        $value = $this->orders()[$orderId]['method_code'] ?? null;
+
+        return is_string($value) ? $value : null;
+    }
+
     public function getRemoteId(string $orderId): ?string
     {
         $value = $this->orders()[$orderId]['remote_id'] ?? null;
@@ -100,8 +111,9 @@ final class PaymentDetails
     }
 
     /**
-     * Records the latest known state. A final status (SUCCESS, FAILURE) is never overwritten.
-     * The remoteID is the attempt that decided the status; for SUCCESS it is the one refunds are made for.
+     * Records the latest known state. SUCCESS is never overwritten; FAILURE is, because the customer can still pay
+     * the same OrderID with a new attempt. The remoteID is the attempt that decided the status; for SUCCESS
+     * it is the one refunds are made for.
      */
     public function recordOrderStatus(string $orderId, string $status, ?string $remoteId = null): void
     {
@@ -110,8 +122,7 @@ final class PaymentDetails
             return;
         }
 
-        $current = $orders[$orderId]['status'] ?? null;
-        if (AutopayTransaction::isFinalStatus(is_string($current) ? $current : null)) {
+        if (AutopayTransaction::STATUS_SUCCESS === ($orders[$orderId]['status'] ?? null)) {
             return;
         }
 
@@ -155,6 +166,21 @@ final class PaymentDetails
         }
 
         return array_reverse($open);
+    }
+
+    /**
+     * @return list<string> OrderIDs not known as paid, newest first (a failed OrderID can still be paid)
+     */
+    public function getUnpaidOrderIds(): array
+    {
+        $unpaid = [];
+        foreach ($this->orders() as $orderId => $order) {
+            if (AutopayTransaction::STATUS_SUCCESS !== ($order['status'] ?? null)) {
+                $unpaid[] = (string) $orderId;
+            }
+        }
+
+        return array_reverse($unpaid);
     }
 
     public function hasOpenOrders(): bool
@@ -208,7 +234,7 @@ final class PaymentDetails
     }
 
     /**
-     * A final status (DONE, CANCELED) is never overwritten.
+     * DONE is never overwritten; any other status can change (Autopay can still make a canceled refund).
      *
      * @return bool true when the stored status changed
      */
@@ -216,7 +242,7 @@ final class PaymentDetails
     {
         $refunds = $this->refunds();
         $current = $refunds[$messageId]['status'] ?? null;
-        if (!isset($refunds[$messageId]) || $current === $status || RefundCreated::isFinalStatus(is_string($current) ? $current : null)) {
+        if (!isset($refunds[$messageId]) || $current === $status || RefundCreated::STATUS_DONE === $current) {
             return false;
         }
 
@@ -258,6 +284,19 @@ final class PaymentDetails
     public function hasRefund(string $key): bool
     {
         return isset($this->refunds()[$key]);
+    }
+
+    /**
+     * @return array{remote_id: string, amount: int, currency: string, status: string}|null
+     */
+    public function getRefund(string $key): ?array
+    {
+        $refund = $this->refunds()[$key] ?? null;
+        if (!is_array($refund) || !is_string($refund['remote_id'] ?? null) || !is_int($refund['amount'] ?? null) || !is_string($refund['currency'] ?? null) || !is_string($refund['status'] ?? null)) {
+            return null;
+        }
+
+        return ['remote_id' => $refund['remote_id'], 'amount' => $refund['amount'], 'currency' => $refund['currency'], 'status' => $refund['status']];
     }
 
     public function setRefundRemoteOutId(string $key, string $remoteOutId): void

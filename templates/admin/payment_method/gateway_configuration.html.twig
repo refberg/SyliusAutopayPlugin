@@ -6,6 +6,7 @@
         <div class="col-12 col-md-6">{{ form_row(config.service_id) }}</div>
         <div class="col-12 col-md-6">{{ form_row(config.shared_key) }}</div>
         <div class="col-12 col-md-6">{{ form_row(config.hash_algorithm) }}</div>
+        <div class="col-12 col-md-6">{{ form_row(config.currency) }}</div>
     </div>
 
     {% set code = hookable_metadata.context.form.vars.data.code|default(null) %}

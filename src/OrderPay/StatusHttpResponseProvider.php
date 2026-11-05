@@ -17,6 +17,8 @@ use Symfony\Component\HttpFoundation\Request;
  * instead of offering to pay again. The payment itself stays unpaid until Autopay confirms it.
  *
  * Completed and failed payments are left to the default Sylius flow.
+ *
+ * @internal
  */
 final readonly class StatusHttpResponseProvider implements HttpResponseProviderInterface
 {

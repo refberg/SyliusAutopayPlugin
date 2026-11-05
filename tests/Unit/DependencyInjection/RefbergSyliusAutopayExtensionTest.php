@@ -42,6 +42,7 @@ final class RefbergSyliusAutopayExtensionTest extends TestCase
 
         self::assertEquals(15.0, $container->getParameter('refberg_autopay.http_timeout'));
         self::assertSame(0, $container->getParameter('refberg_autopay.transaction_validity'));
+        self::assertSame([], $container->getParameter('refberg_autopay.allowed_return_hosts'));
     }
 
     public function test_injected_plugin_services_are_registered_under_their_interface(): void

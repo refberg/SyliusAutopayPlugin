@@ -17,6 +17,7 @@ use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentLockerInterface;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentStateApplierInterface;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentSynchronizerInterface;
+use Refberg\SyliusAutopayPlugin\Payment\TransactionCancellerInterface;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Bundle\PaymentBundle\Provider\PaymentRequestProviderInterface;
 use Sylius\Component\Core\Model\PaymentInterface;
@@ -43,6 +44,7 @@ final readonly class NotifyPaymentRequestHandler
         private CredentialsResolverInterface $credentialsResolver,
         private NotificationParserInterface $notificationParser,
         private PaymentSynchronizerInterface $synchronizer,
+        private TransactionCancellerInterface $canceller,
         private PaymentLockerInterface $paymentLocker,
         private StateMachineInterface $stateMachine,
         private LoggerInterface $logger = new NullLogger(),
@@ -100,7 +102,7 @@ final readonly class NotifyPaymentRequestHandler
         }
 
         if (PaymentStateApplierInterface::RESULT_COMPLETED === $result) {
-            $this->restorePaidMethod($payment, $method, $orderId);
+            $this->onPaymentCompleted($this->canceller, $paymentRequest, $payment, $credentials, $orderId);
         }
 
         $this->completeRequest($paymentRequest, [
@@ -116,13 +118,16 @@ final readonly class NotifyPaymentRequestHandler
      * of the paid OrderID was made in the Autopay panel and is recorded as external. Once done refunds cover
      * the payment, it is moved to "refunded"; a partial refund changes nothing, as Sylius has no state for it.
      *
+     * Exception to "state only from the API": a panel refund cannot be read back (outDetails needs our MessageID),
+     * so the signed ISTN is trusted, bounded by the paid OrderID, the currency and the payment amount.
+     *
      * @return array<string, mixed>
      */
     private function handleRefund(Notification $notification, PaymentInterface $payment): array
     {
         $status = match ($notification->status) {
-            'SUCCESS' => RefundCreated::STATUS_DONE,
-            'FAILURE' => RefundCreated::STATUS_CANCELED,
+            Notification::TRANSFER_SUCCESS => RefundCreated::STATUS_DONE,
+            Notification::TRANSFER_FAILURE => RefundCreated::STATUS_CANCELED,
             default => RefundCreated::STATUS_PENDING,
         };
 
@@ -132,6 +137,8 @@ final readonly class NotifyPaymentRequestHandler
             if (
                 $notification->orderId !== $details->getCompletedOrderId() ||
                 null === $notification->amount ||
+                $notification->amount <= 0 ||
+                $notification->amount > (int) $payment->getAmount() ||
                 $notification->currency !== $payment->getCurrencyCode()
             ) {
                 $this->logger->warning('Ignored Autopay refund notification that does not match the paid transaction.', [

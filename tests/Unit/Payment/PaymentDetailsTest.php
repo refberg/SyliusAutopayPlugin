@@ -17,12 +17,13 @@ final class PaymentDetailsTest extends TestCase
         $payment->setDetails(['other' => 'kept']);
 
         $details = PaymentDetails::of($payment);
-        $details->addOrder('O1', '100001', 'R1', 1500, 'PLN');
+        $details->addOrder('O1', '100001', 'R1', 1500, 'PLN', 'AUTOPAY');
         $details->save();
 
         self::assertSame('kept', $payment->getDetails()['other']);
+        self::assertSame('AUTOPAY', $details->getMethodCode('O1'));
         self::assertSame([
-            'orders' => ['O1' => ['service_id' => '100001', 'remote_id' => 'R1', 'status' => 'PENDING', 'amount' => 1500, 'currency' => 'PLN']],
+            'orders' => ['O1' => ['service_id' => '100001', 'method_code' => 'AUTOPAY', 'remote_id' => 'R1', 'status' => 'PENDING', 'amount' => 1500, 'currency' => 'PLN']],
             'current_order_id' => 'O1',
         ], $payment->getDetails()[AutopayGateway::DETAILS_KEY]);
     }
@@ -57,6 +58,11 @@ final class PaymentDetailsTest extends TestCase
         self::assertNull($details->getOrderStatus('O3'));
         self::assertSame([], $details->getOpenOrderIds());
         self::assertFalse($details->hasOpenOrders());
+        // A failed OrderID can still be paid with a new attempt.
+        self::assertSame(['O2'], $details->getUnpaidOrderIds());
+        $details->recordOrderStatus('O2', 'SUCCESS', 'R2b');
+        self::assertSame('SUCCESS', $details->getOrderStatus('O2'));
+        self::assertSame([], $details->getUnpaidOrderIds());
     }
 
     public function test_warnings_are_recorded_once(): void
@@ -113,6 +119,21 @@ final class PaymentDetailsTest extends TestCase
         self::assertTrue($details->hasActiveRefund());
         self::assertSame('ZWTR_2', $details->refunds()['M1']['remote_out_id']);
         self::assertFalse($details->hasRefund('M9'));
+    }
+
+    public function test_canceled_refund_can_still_be_done_but_done_is_final(): void
+    {
+        $details = self::details();
+        $details->recordRefund('M1', 'R1', 'REQUESTING', 1000, 'PLN');
+
+        self::assertSame(['M1'], $details->getPendingRefundIds());
+        self::assertSame(['remote_id' => 'R1', 'amount' => 1000, 'currency' => 'PLN', 'status' => 'REQUESTING'], $details->getRefund('M1'));
+        self::assertTrue($details->updateRefundStatus('M1', 'CANCELED'));
+        self::assertSame([], $details->getPendingRefundIds());
+        self::assertTrue($details->updateRefundStatus('M1', 'DONE'));
+        self::assertFalse($details->updateRefundStatus('M1', 'CANCELED'));
+        self::assertSame(1000, $details->finalizedRefundAmount());
+        self::assertNull($details->getRefund('M9'));
     }
 
     public function test_only_canceled_refunds_are_not_active(): void

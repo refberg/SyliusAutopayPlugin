@@ -43,8 +43,11 @@ use Refberg\SyliusAutopayPlugin\Payment\PaymentSynchronizer;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentSynchronizerInterface;
 use Refberg\SyliusAutopayPlugin\Payment\RefundSynchronizer;
 use Refberg\SyliusAutopayPlugin\Payment\RefundSynchronizerInterface;
+use Refberg\SyliusAutopayPlugin\Payment\TransactionCanceller;
+use Refberg\SyliusAutopayPlugin\Payment\TransactionCancellerInterface;
 use Refberg\SyliusAutopayPlugin\Provider\AutopayNotifyPaymentProvider;
 use Refberg\SyliusAutopayPlugin\Provider\NotifyResponseProvider;
+use Refberg\SyliusAutopayPlugin\Resolver\CurrencyAwarePaymentMethodsResolver;
 use Refberg\SyliusAutopayPlugin\Signature\SignatureVerifier;
 use Refberg\SyliusAutopayPlugin\Signature\SignatureVerifierInterface;
 use Sylius\Bundle\PaymentBundle\CommandProvider\ActionsCommandProvider;
@@ -56,6 +59,8 @@ return static function (ContainerConfigurator $container): void {
     $parameters->set('refberg_autopay.http_timeout', 15.0);
     // Seconds a started transaction can be paid (Autopay "ValidityTime"); 0 leaves the Autopay default.
     $parameters->set('refberg_autopay.transaction_validity', 0);
+    // Hosts a "return_url" payload of the API may point to, besides the order channel's hostname.
+    $parameters->set('refberg_autopay.allowed_return_hosts', []);
 
     $services = $container->services();
     $services->defaults()->private();
@@ -83,7 +88,7 @@ return static function (ContainerConfigurator $container): void {
     $services->set(ExtOrderIdGeneratorInterface::class, ExtOrderIdGenerator::class);
     $services->set(AutopayTransactionValidatorInterface::class, AutopayTransactionValidator::class);
     $services->set(TransactionRequestFactoryInterface::class, TransactionRequestFactory::class)
-        ->args([null, param('refberg_autopay.transaction_validity')]);
+        ->args([null, param('refberg_autopay.transaction_validity'), param('refberg_autopay.allowed_return_hosts')]);
 
     $services->set(PaymentLockerInterface::class, PaymentLocker::class)
         ->args([service('doctrine.orm.entity_manager')]);
@@ -101,6 +106,9 @@ return static function (ContainerConfigurator $container): void {
         ])
         ->tag('monolog.logger', ['channel' => 'autopay']);
 
+    $services->set(TransactionCancellerInterface::class, TransactionCanceller::class)
+        ->args([service(AutopayClientInterface::class)]);
+
     $services->set(RefundSynchronizerInterface::class, RefundSynchronizer::class)
         ->args([service(AutopayClientInterface::class), service('logger')->ignoreOnInvalid()])
         ->tag('monolog.logger', ['channel' => 'autopay']);
@@ -114,6 +122,11 @@ return static function (ContainerConfigurator $container): void {
             param('sylius.model.payment.class'),
         ])
         ->tag('console.command');
+
+    // Checkout: only Autopay methods whose service accepts the payment's currency
+    $services->set(CurrencyAwarePaymentMethodsResolver::class)
+        ->decorate('sylius.resolver.payment_methods.channel_based')
+        ->args([service('.inner'), service(CredentialsResolverInterface::class)]);
 
     // Admin: gateway configuration form
     $services->set(AutopayGatewayConfigurationType::class)
@@ -150,10 +163,14 @@ return static function (ContainerConfigurator $container): void {
             service(TransactionRequestFactoryInterface::class),
             service(ExtOrderIdGeneratorInterface::class),
         ],
-        StatusPaymentRequestHandler::class => [service(PaymentSynchronizerInterface::class)],
-        NotifyPaymentRequestHandler::class => [service(NotificationParserInterface::class), service(PaymentSynchronizerInterface::class)],
+        StatusPaymentRequestHandler::class => [service(PaymentSynchronizerInterface::class), service(TransactionCancellerInterface::class)],
+        NotifyPaymentRequestHandler::class => [
+            service(NotificationParserInterface::class),
+            service(PaymentSynchronizerInterface::class),
+            service(TransactionCancellerInterface::class),
+        ],
         RefundPaymentRequestHandler::class => [service(AutopayClientInterface::class)],
-        CancelPaymentRequestHandler::class => [service(AutopayClientInterface::class)],
+        CancelPaymentRequestHandler::class => [service(TransactionCancellerInterface::class)],
     ];
     foreach ($handlerArguments as $handler => $arguments) {
         $services->set($handler)
@@ -176,8 +193,10 @@ return static function (ContainerConfigurator $container): void {
             service(ExtOrderIdGeneratorInterface::class),
             service('sylius.repository.payment'),
             service(ConfirmationFactoryInterface::class),
+            service('logger')->ignoreOnInvalid(),
         ])
-        ->tag('sylius.payment_request.payment_notify_provider');
+        ->tag('sylius.payment_request.payment_notify_provider')
+        ->tag('monolog.logger', ['channel' => 'autopay']);
 
     $services->set(AcknowledgedNotificationListener::class)
         ->tag('kernel.event_listener', ['event' => 'kernel.exception', 'priority' => 64]);
@@ -197,6 +216,7 @@ return static function (ContainerConfigurator $container): void {
         ->tag('sylius.payment_request.provider.http_response', ['gateway_factory' => AutopayGateway::FACTORY_NAME]);
 
     $services->set(CaptureHttpResponseProvider::class)
+        ->args([null])
         ->tag('refberg_autopay.http_response_provider', ['action' => PaymentRequestInterface::ACTION_CAPTURE])
         ->tag('refberg_autopay.http_response_provider', ['action' => PaymentRequestInterface::ACTION_AUTHORIZE]);
 

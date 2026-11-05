@@ -20,6 +20,8 @@ use Symfony\Component\HttpFoundation\Response;
  * (e.g. the transaction does not match the payment), so Autopay stops repeating it.
  * Errors worth a retry never get here: they end the request with HTTP 5xx.
  * Other gateways keep the core response.
+ *
+ * @internal
  */
 final readonly class NotifyResponseProvider implements NotifyResponseProviderInterface
 {

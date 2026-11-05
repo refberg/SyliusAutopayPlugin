@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Refberg\SyliusAutopayPlugin\Integration;
 
-use PHPUnit\Framework\Attributes\TestWith;
 use Refberg\SyliusAutopayPlugin\Console\RefreshRefundsCommand;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
@@ -15,6 +14,8 @@ use Symfony\Bundle\FrameworkBundle\Console\Application;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
 use function array_key_first;
+use function array_key_last;
+use function array_map;
 use function array_values;
 use function json_encode;
 use function parse_str;
@@ -110,21 +111,64 @@ final class RefundFlowTest extends IntegrationTestCase
         self::assertSame(0, $details->activeRefundAmount());
     }
 
-    #[TestWith([200, 'TRANSACTION_TOO_OLD_TO_REFUND'])]
-    #[TestWith([503, 'SYSTEM_ERROR'])]
-    public function test_failed_refund_call_is_recorded_on_the_payment_request(int $httpStatus, string $errorName): void
+    public function test_refund_refused_by_autopay_is_recorded_as_canceled(): void
     {
         $payment = $this->paidPayment();
-        $this->autopay->failNextRequest($httpStatus, $errorName);
+        $this->autopay->failNextRequest(200, 'TRANSACTION_TOO_OLD_TO_REFUND');
 
         $this->refundInAdmin($payment);
 
         $requests = $this->paymentRequests(PaymentRequestInterface::ACTION_REFUND);
         self::assertCount(1, $requests);
         self::assertSame(PaymentRequestInterface::STATE_FAILED, $requests[0]->getState());
-        self::assertStringContainsString($errorName, (string) json_encode($requests[0]->getResponseData()));
-        self::assertSame([], $this->details($payment)->refunds());
+        self::assertStringContainsString('TRANSACTION_TOO_OLD_TO_REFUND', (string) json_encode($requests[0]->getResponseData()));
+        $details = $this->details($payment);
+        self::assertSame(['CANCELED'], array_values(array_map(static fn (array $refund): mixed => $refund['status'] ?? null, $details->refunds())));
+        self::assertSame([], $details->getPendingRefundIds());
         self::assertSame('refunded', $this->reloadPayment($payment)->getState());
+    }
+
+    public function test_refund_that_did_not_reach_autopay_is_requested_again_by_the_refresh_command(): void
+    {
+        $payment = $this->paidPayment();
+        $this->autopay->failNextRequest(503, 'SYSTEM_ERROR');
+
+        $this->refundInAdmin($payment);
+
+        $requests = $this->paymentRequests(PaymentRequestInterface::ACTION_REFUND);
+        self::assertSame(PaymentRequestInterface::STATE_FAILED, $requests[0]->getState());
+        $messageId = str_replace('-', '', (string) $requests[0]->getId());
+        self::assertSame('REQUESTING', $this->details($payment)->refunds()[$messageId]['status']);
+        self::assertSame([], $this->autopay->refunds());
+
+        self::assertSame(Command::SUCCESS, $this->refreshRefunds()->getStatusCode());
+
+        self::assertArrayHasKey($messageId, $this->autopay->refunds());
+        self::assertSame('PENDING', $this->details($payment)->refunds()[$messageId]['status']);
+        // Requested again with the same MessageID: still one refund at Autopay.
+        $this->refreshRefunds();
+        self::assertCount(1, $this->autopay->refunds());
+    }
+
+    public function test_refresh_command_goes_on_after_a_failing_payment(): void
+    {
+        $first = $this->paidPayment();
+        $this->refundInAdmin($first);
+        $firstMessageId = (string) array_key_first($this->autopay->refunds());
+        // The refund of the first payment is unknown to Autopay: reading its status fails.
+        $this->autopay->forgetRefund($firstMessageId);
+
+        $second = $this->paidPayment('000000002', 'order-token-2');
+        $this->refundInAdmin($second);
+        $secondMessageId = (string) array_key_last($this->autopay->refunds());
+        $this->autopay->setRefundStatus($secondMessageId, 'DONE');
+
+        $tester = $this->refreshRefunds();
+
+        self::assertSame(Command::FAILURE, $tester->getStatusCode());
+        self::assertStringContainsString('Autopay refunds updated: 1.', $tester->getDisplay());
+        self::assertSame('DONE', $this->details($second)->refunds()[$secondMessageId]['status']);
+        self::assertSame('PENDING', $this->details($first)->refunds()[$firstMessageId]['status']);
     }
 
     public function test_refund_request_for_a_payment_that_was_not_refunded_in_sylius_never_reaches_autopay(): void
@@ -155,13 +199,13 @@ final class RefundFlowTest extends IntegrationTestCase
         $requests = $this->paymentRequests(PaymentRequestInterface::ACTION_REFUND);
         self::assertSame(PaymentRequestInterface::STATE_FAILED, $requests[0]->getState());
         self::assertStringContainsString('AMOUNT_EXCEEDS_BALANCE', (string) json_encode($requests[0]->getResponseData()));
-        self::assertSame([], array_values($this->details($payment)->refunds()));
+        self::assertFalse($this->details($payment)->hasActiveRefund());
     }
 
-    private function paidPayment(): PaymentInterface
+    private function paidPayment(string $number = '000000001', string $token = 'order-token'): PaymentInterface
     {
-        $payment = $this->createPlacedOrder();
-        $this->payInShop();
+        $payment = '000000001' === $number ? $this->createPlacedOrder() : $this->createSecondPlacedOrder($number, $token);
+        $this->payInShop($token);
         $orderId = $this->autopay->lastOrderId();
         $this->autopay->setStatus($orderId, 'SUCCESS');
         $this->notifyOrder($orderId);

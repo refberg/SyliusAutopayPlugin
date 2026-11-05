@@ -73,12 +73,17 @@ final class PaymentStateApplierTest extends TestCase
         self::assertSame([], $this->stateMachine->applied);
     }
 
-    public function test_failure_fails_the_payment_when_nothing_else_is_open(): void
+    public function test_failure_keeps_the_payment_new_so_a_later_attempt_can_pay_it(): void
     {
         $payment = self::payment(['O1']);
 
-        self::assertSame(PaymentStateApplier::RESULT_FAILED, $this->applier->apply($payment, self::transaction('O1', 'FAILURE')));
-        self::assertSame('failed', $payment->getState());
+        self::assertSame(PaymentStateApplier::RESULT_UNCHANGED, $this->applier->apply($payment, self::transaction('O1', 'FAILURE')));
+        self::assertSame('new', $payment->getState());
+        self::assertSame('FAILURE', PaymentDetails::of($payment)->getOrderStatus('O1'));
+
+        self::assertSame(PaymentStateApplier::RESULT_COMPLETED, $this->applier->apply($payment, self::transaction('O1', 'SUCCESS', 'R2')));
+        self::assertSame('completed', $payment->getState());
+        self::assertSame('SUCCESS', PaymentDetails::of($payment)->getOrderStatus('O1'));
     }
 
     public function test_failure_keeps_the_payment_when_another_transaction_may_still_be_paid(): void

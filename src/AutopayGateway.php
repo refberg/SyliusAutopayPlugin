@@ -19,6 +19,14 @@ final class AutopayGateway
 
     public const CONFIG_HASH_ALGORITHM = 'hash_algorithm';
 
+    /** The one currency of the Autopay service ID (Autopay default: PLN). */
+    public const CONFIG_CURRENCY = 'currency';
+
+    /** Currencies Autopay accepts. */
+    public const CURRENCIES = ['PLN', 'EUR', 'GBP', 'USD'];
+
+    public const DEFAULT_CURRENCY = 'PLN';
+
     private function __construct()
     {
     }

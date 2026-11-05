@@ -15,6 +15,7 @@ use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentLockerInterface;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentStateApplierInterface;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentSynchronizerInterface;
+use Refberg\SyliusAutopayPlugin\Payment\TransactionCancellerInterface;
 use Refberg\SyliusAutopayPlugin\Signature\SignatureVerifier;
 use Sylius\Bundle\PaymentBundle\Provider\PaymentRequestProviderInterface;
 use Sylius\Component\Core\Model\Payment;
@@ -119,6 +120,7 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
             new CredentialsResolver(),
             new NotificationParser(new SignatureVerifier()),
             $synchronizer,
+            self::createStub(TransactionCancellerInterface::class),
             self::createStub(PaymentLockerInterface::class),
             new PaymentStateMachine(),
         );

@@ -23,6 +23,15 @@ deprecations are added in 1.x releases, and deprecated code is removed in 2.0.
 - Container parameters `refberg_autopay.http_timeout` and `refberg_autopay.transaction_validity`.
 - Optional integration with the Sylius shop, admin panel and Twig Hooks.
 - Autopay transaction, refunds and warnings shown next to the payment on the admin order page.
+- Currency setting of the Autopay service; the method is offered only for payments in that currency.
+- Container parameter `refberg_autopay.allowed_return_hosts`; a `return_url` payload must point to the channel's
+  hostname or a listed host.
+- Refunds that did not reach Autopay are requested again by `refberg:autopay:refresh-refunds` with the same
+  `MessageID`.
+- After a transaction pays the payment, the other open transactions of the payment are cancelled at Autopay.
+- The shop shows an error message when Autopay refuses to start a transaction or cannot be reached.
+- A failed Autopay transaction does not fail the Sylius payment, so a later attempt of the same OrderID can pay it.
+- Correctly signed notifications for unknown OrderIDs are confirmed and logged instead of answered with HTTP 404.
 
 ### Changed
 

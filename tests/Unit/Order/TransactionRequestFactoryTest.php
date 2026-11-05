@@ -11,6 +11,7 @@ use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 use Refberg\SyliusAutopayPlugin\Order\TransactionRequestFactory;
 use Sylius\Bundle\CoreBundle\OrderPay\Provider\UrlProviderInterface;
+use Sylius\Component\Core\Model\Channel;
 use Sylius\Component\Core\Model\Customer;
 use Sylius\Component\Core\Model\Order;
 use Sylius\Component\Core\Model\Payment;
@@ -71,6 +72,24 @@ final class TransactionRequestFactoryTest extends TestCase
         $request->setPayload(['return_url' => 'https://app.example/return?x=1']);
 
         self::assertSame('https://app.example/return?x=1', (new TransactionRequestFactory(null))->create($request, $payment, 'ORDER-1')['ReturnURL']);
+    }
+
+    public function test_return_url_must_point_to_the_channel_or_an_allowed_host(): void
+    {
+        [$payment, $request] = self::payment(100, 'buyer@example.com');
+        $channel = new Channel();
+        $channel->setHostname('shop.example');
+        $payment->getOrder()?->setChannel($channel);
+        $factory = new TransactionRequestFactory(null, 0, ['App.Example']);
+
+        $request->setPayload(['return_url' => 'https://shop.example/return']);
+        self::assertSame('https://shop.example/return', $factory->create($request, $payment, 'ORDER-1')['ReturnURL']);
+        $request->setPayload(['return_url' => 'https://app.example/return']);
+        self::assertSame('https://app.example/return', $factory->create($request, $payment, 'ORDER-1')['ReturnURL']);
+
+        $request->setPayload(['return_url' => 'https://evil.example/return']);
+        $this->expectException(InvalidArgumentException::class);
+        $factory->create($request, $payment, 'ORDER-1');
     }
 
     #[TestWith(['javascript:alert(1)'])]

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Refberg\SyliusAutopayPlugin\Provider;
 
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Refberg\SyliusAutopayPlugin\Config\CredentialsResolverInterface;
 use Refberg\SyliusAutopayPlugin\Config\InvalidConfigurationException;
 use Refberg\SyliusAutopayPlugin\Notification\ConfirmationFactoryInterface;
@@ -17,7 +19,6 @@ use Sylius\Component\Payment\Model\PaymentMethodInterface;
 use Sylius\Resource\Doctrine\Persistence\RepositoryInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
-use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 
 /**
@@ -25,7 +26,13 @@ use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
  *
  * Runs before Sylius stores anything, so notifications with a missing or wrong hash are rejected with HTTP 400
  * and never create a payment request. The payment is found by the OrderID (and service ID) stored
- * in its details, not by its current payment method. ISTNs about settlements are confirmed and ignored.
+ * in its details, not by its current payment method.
+ *
+ * Correctly signed notifications that need no processing are confirmed without storing them, so Autopay does not
+ * repeat them for days: ISTNs about settlements, and notifications of OrderIDs no Sylius payment knows
+ * (started outside Sylius on the same service, or by a capture that timed out), which are logged.
+ *
+ * @internal
  */
 final readonly class AutopayNotifyPaymentProvider implements NotifyPaymentProviderInterface
 {
@@ -38,6 +45,7 @@ final readonly class AutopayNotifyPaymentProvider implements NotifyPaymentProvid
         private ExtOrderIdGeneratorInterface $extOrderIdGenerator,
         private RepositoryInterface $paymentRepository,
         private ConfirmationFactoryInterface $confirmationFactory,
+        private LoggerInterface $logger = new NullLogger(),
     ) {
     }
 
@@ -67,7 +75,15 @@ final readonly class AutopayNotifyPaymentProvider implements NotifyPaymentProvid
         $paymentId = $this->extOrderIdGenerator->extractPaymentId($orderId);
         $payment = null !== $paymentId ? $this->paymentRepository->find($paymentId) : null;
         if (!$payment instanceof PaymentInterface || !PaymentDetails::of($payment)->hasOrderOfService($orderId, $credentials->serviceId)) {
-            throw new NotFoundHttpException('No payment matches this Autopay notification.');
+            $this->logger->error('Autopay notification matches no Sylius payment; it was confirmed and ignored.', [
+                'order_id' => $notification->orderId,
+                'remote_id' => $notification->remoteId,
+                'remote_out_id' => $notification->remoteOutId,
+                'type' => $notification->type,
+                'status' => $notification->status,
+            ]);
+
+            throw new AcknowledgedNotificationException($this->confirmationFactory->create($notification, $credentials, true));
         }
 
         return $payment;

@@ -14,6 +14,7 @@ use Sylius\Component\Core\Model\PaymentInterface;
 use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 use function array_filter;
+use function array_map;
 use function filter_var;
 use function in_array;
 use function is_array;
@@ -22,8 +23,10 @@ use function mb_substr;
 use function parse_url;
 use function preg_replace;
 use function sprintf;
+use function strtolower;
 use const FILTER_VALIDATE_EMAIL;
 use const FILTER_VALIDATE_URL;
+use const PHP_URL_HOST;
 use const PHP_URL_SCHEME;
 
 /**
@@ -38,9 +41,13 @@ final readonly class TransactionRequestFactory implements TransactionRequestFact
 
     private const DESCRIPTION_LENGTH = 79;
 
+    /**
+     * @param list<string> $allowedReturnHosts hosts a "return_url" payload may point to, besides the order channel's hostname
+     */
     public function __construct(
         private ?UrlProviderInterface $afterPayUrlProvider,
         private int $validitySeconds = 0,
+        private array $allowedReturnHosts = [],
     ) {
     }
 
@@ -68,7 +75,7 @@ final readonly class TransactionRequestFactory implements TransactionRequestFact
             'Currency' => $currency,
             'CustomerEmail' => null !== $email && false !== filter_var($email, FILTER_VALIDATE_EMAIL) ? $email : '',
             'ValidityTime' => $this->validityTime(),
-            'ReturnURL' => $this->returnUrl($paymentRequest),
+            'ReturnURL' => $this->returnUrl($paymentRequest, $order),
         ], static fn (string $value): bool => '' !== $value);
     }
 
@@ -83,7 +90,7 @@ final readonly class TransactionRequestFactory implements TransactionRequestFact
             ->format('Y-m-d H:i:s');
     }
 
-    private function returnUrl(PaymentRequestInterface $paymentRequest): string
+    private function returnUrl(PaymentRequestInterface $paymentRequest, OrderInterface $order): string
     {
         $payload = $paymentRequest->getPayload();
         $requested = is_array($payload) ? ($payload[self::PAYLOAD_RETURN_URL] ?? null) : null;
@@ -91,6 +98,9 @@ final readonly class TransactionRequestFactory implements TransactionRequestFact
         if (null !== $requested) {
             if (!is_string($requested) || !self::isAbsoluteHttpUrl($requested)) {
                 throw new InvalidArgumentException(sprintf('Payload "%s" must be an absolute http(s) URL.', self::PAYLOAD_RETURN_URL));
+            }
+            if (!$this->isAllowedHost($requested, $order)) {
+                throw new InvalidArgumentException(sprintf('Payload "%s" must point to the shop (channel hostname or refberg_autopay.allowed_return_hosts).', self::PAYLOAD_RETURN_URL));
             }
 
             return $requested;
@@ -101,6 +111,22 @@ final readonly class TransactionRequestFactory implements TransactionRequestFact
         }
 
         return $this->afterPayUrlProvider->getUrl($paymentRequest, UrlGeneratorInterface::ABSOLUTE_URL);
+    }
+
+    /**
+     * Keeps the Autopay page from redirecting customers to any site (open redirect). Without a channel hostname
+     * and without configured hosts there is nothing to compare with, so any host is accepted.
+     */
+    private function isAllowedHost(string $url, OrderInterface $order): bool
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+        $allowed = array_map(strtolower(...), $this->allowedReturnHosts);
+        $channelHost = $order->getChannel()?->getHostname();
+        if (null !== $channelHost && '' !== $channelHost) {
+            $allowed[] = strtolower($channelHost);
+        }
+
+        return [] === $allowed || in_array($host, $allowed, true);
     }
 
     private static function isAbsoluteHttpUrl(string $url): bool

@@ -204,6 +204,14 @@ final class FakeAutopay
         return http_build_query(['transactions' => base64_encode(self::transactionListXml(self::SERVICE_ID, [$transaction], $hash))]);
     }
 
+    /**
+     * Autopay no longer knows the refund, so reading its status fails.
+     */
+    public function forgetRefund(string $messageId): void
+    {
+        unset($this->refunds[$messageId]);
+    }
+
     public function setRefundStatus(string $messageId, string $status): void
     {
         if (!isset($this->refunds[$messageId])) {

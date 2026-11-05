@@ -7,9 +7,11 @@ namespace Refberg\SyliusAutopayPlugin\Config;
 use Refberg\SyliusAutopayPlugin\AutopayGateway;
 use Sylius\Component\Payment\Model\GatewayConfigInterface;
 use Sylius\Component\Payment\Model\PaymentMethodInterface;
+use function in_array;
 use function is_scalar;
 use function preg_match;
 use function sprintf;
+use function strtoupper;
 use function trim;
 
 final readonly class CredentialsResolver implements CredentialsResolverInterface
@@ -57,7 +59,14 @@ final readonly class CredentialsResolver implements CredentialsResolverInterface
             throw new InvalidConfigurationException(sprintf('Payment method "%s" is missing the Autopay "%s" setting.', (string) $paymentMethod->getCode(), AutopayGateway::CONFIG_SHARED_KEY));
         }
 
-        return new AutopayCredentials($serviceId, $sharedKey, $hashAlgorithm, $environment);
+        // Older configurations without the setting use the Autopay default.
+        $currency = strtoupper(self::string($config, AutopayGateway::CONFIG_CURRENCY));
+        $currency = '' === $currency ? AutopayGateway::DEFAULT_CURRENCY : $currency;
+        if (!in_array($currency, AutopayGateway::CURRENCIES, true)) {
+            throw new InvalidConfigurationException(sprintf('Payment method "%s" has an unsupported Autopay currency.', (string) $paymentMethod->getCode()));
+        }
+
+        return new AutopayCredentials($serviceId, $sharedKey, $hashAlgorithm, $environment, $currency);
     }
 
     /**

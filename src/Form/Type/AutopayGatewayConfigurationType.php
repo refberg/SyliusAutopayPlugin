@@ -16,6 +16,7 @@ use Symfony\Component\Form\FormEvent;
 use Symfony\Component\Form\FormEvents;
 use Symfony\Component\Validator\Constraints\NotBlank;
 use Symfony\Component\Validator\Constraints\Regex;
+use function array_combine;
 use function is_array;
 use function is_string;
 use function trim;
@@ -66,6 +67,13 @@ final class AutopayGatewayConfigurationType extends AbstractType
                     'SHA-512' => HashAlgorithm::Sha512->value,
                 ],
                 'empty_data' => HashAlgorithm::Sha256->value,
+                'constraints' => [new NotBlank(groups: self::GROUPS)],
+            ])
+            ->add(AutopayGateway::CONFIG_CURRENCY, ChoiceType::class, [
+                'label' => 'refberg_autopay.form.gateway_configuration.currency',
+                'help' => 'refberg_autopay.form.gateway_configuration.currency_help',
+                'choices' => array_combine(AutopayGateway::CURRENCIES, AutopayGateway::CURRENCIES),
+                'empty_data' => AutopayGateway::DEFAULT_CURRENCY,
                 'constraints' => [new NotBlank(groups: self::GROUPS)],
             ])
             ->addEventListener(FormEvents::PRE_SUBMIT, self::keepStoredSecrets(...))

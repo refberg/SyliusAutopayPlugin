@@ -19,8 +19,9 @@ use function count;
  * Rules are monotonic, so duplicated or out-of-order notifications cannot change the outcome:
  *  - SUCCESS completes the payment once; a second OrderID of the same payment that succeeds,
  *    or a second successful attempt of the same OrderID, is recorded as a warning and never pays the order twice,
- *  - FAILURE fails the payment only when no other OrderID of this payment may still be paid,
- *  - PENDING never changes the payment state.
+ *  - FAILURE and PENDING never change the payment state: after a FAILURE the customer can still pay
+ *    the same OrderID with a new attempt (Autopay documentation), and a failed Sylius payment could not be
+ *    completed any more. The customer retries from the order page; unpaid orders are cancelled by Sylius.
  */
 final readonly class PaymentStateApplier implements PaymentStateApplierInterface
 {
@@ -46,7 +47,6 @@ final readonly class PaymentStateApplier implements PaymentStateApplierInterface
 
         $result = match ($transaction->status) {
             AutopayTransaction::STATUS_SUCCESS => $this->onSuccess($payment, $details, $transaction),
-            AutopayTransaction::STATUS_FAILURE => $this->onFailure($payment, $details),
             default => self::RESULT_UNCHANGED,
         };
 
@@ -82,22 +82,5 @@ final readonly class PaymentStateApplier implements PaymentStateApplierInterface
         ]);
 
         return self::RESULT_WARNING;
-    }
-
-    private function onFailure(PaymentInterface $payment, PaymentDetails $details): string
-    {
-        if (null !== $details->getCompletedOrderId() || $details->hasOpenOrders()) {
-            return self::RESULT_UNCHANGED;
-        }
-
-        if (!$this->stateMachine->can($payment, PaymentTransitions::GRAPH, PaymentTransitions::TRANSITION_FAIL)) {
-            return self::RESULT_UNCHANGED;
-        }
-
-        $this->stateMachine->apply($payment, PaymentTransitions::GRAPH, PaymentTransitions::TRANSITION_FAIL);
-
-        $this->logger->info('Autopay payment failed.', ['payment_id' => $payment->getId()]);
-
-        return self::RESULT_FAILED;
     }
 }

@@ -44,6 +44,10 @@ final readonly class AutopayClient implements AutopayClientInterface
 
     private const REFUND_METHOD = 'TRANSACTION_REFUND';
 
+    private const CONFIRMED = 'CONFIRMED';
+
+    private const NOT_CONFIRMED = 'NOTCONFIRMED';
+
     public function __construct(
         private HttpClientInterface $httpClient,
         private SignatureVerifierInterface $signatureVerifier,
@@ -57,7 +61,7 @@ final readonly class AutopayClient implements AutopayClientInterface
         $orderId = $parameters['OrderID'] ?? '';
         [$statusCode, $xml] = $this->postForm($credentials, '/payment', ['ServiceID' => $credentials->serviceId] + $parameters, self::HEADER_CONTINUE);
         $this->assertNoError('Starting Autopay transaction failed', $statusCode, $xml);
-        if ($xml instanceof SimpleXMLElement && 'NOTCONFIRMED' === Xml::text($xml, 'confirmation')) {
+        if ($xml instanceof SimpleXMLElement && self::NOT_CONFIRMED === Xml::text($xml, 'confirmation')) {
             throw $this->rejected('Autopay refused the transaction', $statusCode, Xml::text($xml, 'reason'));
         }
 
@@ -141,14 +145,14 @@ final readonly class AutopayClient implements AutopayClientInterface
 
         $confirmation = $xml instanceof SimpleXMLElement ? Xml::text($xml, 'confirmation') : null;
         $reason = $xml instanceof SimpleXMLElement ? Xml::text($xml, 'reason') : null;
-        if ('NOTCONFIRMED' === $confirmation) {
+        if (self::NOT_CONFIRMED === $confirmation) {
             return new TransactionCancelled(false, $reason);
         }
 
         // The hash is required for CONFIRMED answers only.
         if (
             !$xml instanceof SimpleXMLElement ||
-            'CONFIRMED' !== $confirmation ||
+            self::CONFIRMED !== $confirmation ||
             Xml::text($xml, 'messageID') !== $messageId ||
             !$this->signatureVerifier->verify(Xml::signedValues($xml), Xml::text($xml, 'hash'), $credentials)
         ) {

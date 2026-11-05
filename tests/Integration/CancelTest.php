@@ -50,7 +50,7 @@ final class CancelTest extends IntegrationTestCase
 
         $requests = $this->paymentRequests(PaymentRequestInterface::ACTION_CANCEL);
         self::assertSame(PaymentRequestInterface::STATE_FAILED, $requests[0]->getState());
-        self::assertStringContainsString('INCORRECT_PAYMENT_STATUS', (string) json_encode($requests[0]->getResponseData()));
+        self::assertStringContainsString('was already paid', (string) json_encode($requests[0]->getResponseData()));
 
         $this->notifyOrder($orderId);
         $payment = $this->reloadPayment($payment);
