@@ -1,0 +1,39 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Refberg\SyliusAutopayPlugin\Notification;
+
+use Refberg\SyliusAutopayPlugin\Config\AutopayCredentials;
+use Refberg\SyliusAutopayPlugin\Signature\SignatureVerifierInterface;
+use function htmlspecialchars;
+use const ENT_QUOTES;
+use const ENT_XML1;
+
+final readonly class ConfirmationFactory implements ConfirmationFactoryInterface
+{
+    public function __construct(private SignatureVerifierInterface $signatureVerifier)
+    {
+    }
+
+    public function create(Notification $notification, AutopayCredentials $credentials, bool $confirmed): string
+    {
+        $confirmation = $confirmed ? self::CONFIRMED : self::NOT_CONFIRMED;
+        $hash = $this->signatureVerifier->sign([$credentials->serviceId, $notification->orderId, $confirmation], $credentials);
+
+        return '<?xml version="1.0" encoding="UTF-8"?>' . "\n" .
+            '<confirmationList>' .
+            '<serviceID>' . self::escape($credentials->serviceId) . '</serviceID>' .
+            '<transactionsConfirmations><transactionConfirmed>' .
+            '<orderID>' . self::escape($notification->orderId) . '</orderID>' .
+            '<confirmation>' . $confirmation . '</confirmation>' .
+            '</transactionConfirmed></transactionsConfirmations>' .
+            '<hash>' . $hash . '</hash>' .
+            '</confirmationList>';
+    }
+
+    private static function escape(string $value): string
+    {
+        return htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+    }
+}
