@@ -1,0 +1,3 @@
+refberg_autopay:
+    service_id:
+        invalid: Identyfikator serwisu może zawierać tylko cyfry.

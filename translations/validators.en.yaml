@@ -1,0 +1,3 @@
+refberg_autopay:
+    service_id:
+        invalid: Service ID must contain digits only.

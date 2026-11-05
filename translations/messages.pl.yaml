@@ -1,0 +1,13 @@
+refberg_autopay:
+    gateway_factory:
+        refberg_autopay: Autopay
+    form:
+        gateway_configuration:
+            environment: Środowisko
+            environment_sandbox: Testowe (testpay.autopay.eu)
+            environment_production: Produkcyjne (pay.autopay.eu)
+            service_id: Identyfikator serwisu (ServiceID)
+            shared_key: Klucz współdzielony
+            hash_algorithm: Funkcja skrótu
+            secret_help: Przechowywany w postaci zaszyfrowanej. Zostaw puste, aby nie zmieniać obecnej wartości.
+            notify_url: 'Adres ITN do przekazania Autopay dla tego identyfikatora serwisu:'
