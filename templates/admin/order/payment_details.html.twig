@@ -1,0 +1,25 @@
+{% set payment = hookable_metadata.context.payment %}
+{% set data = payment.details.refberg_autopay|default(null) %}
+
+<td class="py-2" {{ sylius_test_html_attribute('autopay-details') }}>
+    {% if data is iterable and data is not empty %}
+        {% set order_id = data.completed_order_id|default(data.current_order_id|default(null)) %}
+        {% set transaction = data.orders[order_id]|default({}) %}
+        <div class="small text-secondary">
+            Autopay
+            {% if order_id %}<code>{{ order_id }}</code>{% endif %}
+            {% if transaction.remote_id|default(null) %}· {{ 'refberg_autopay.ui.remote_id'|trans }} <code>{{ transaction.remote_id }}</code>{% endif %}
+            {% if transaction.status|default(null) %}· {{ transaction.status }}{% endif %}
+            {% if data.orders|default([])|length > 1 %}· {{ 'refberg_autopay.ui.transactions'|trans({'%count%': data.orders|length}) }}{% endif %}
+        </div>
+        {% for refund in data.refunds|default([]) %}
+            <div class="small text-secondary">
+                {{ (refund.external|default(false) ? 'refberg_autopay.ui.panel_refund' : 'refberg_autopay.ui.refund')|trans }}:
+                {{ (refund.amount|default(0) / 100)|number_format(2, '.', ' ') }} {{ refund.currency|default('') }} · {{ refund.status|default('') }}
+            </div>
+        {% endfor %}
+        {% for warning in data.warnings|default([]) %}
+            <span class="badge bg-warning-lt" {{ sylius_test_html_attribute('autopay-warning') }}>{{ ('refberg_autopay.ui.warning.' ~ warning.type|default('unknown'))|trans }} ({{ warning.order_id|default('') }})</span>
+        {% endfor %}
+    {% endif %}
+</td>

@@ -42,6 +42,13 @@ final class RefbergSyliusAutopayExtension extends Extension implements PrependEx
         $container->prependExtensionConfig('sylius_twig_hooks', ['hooks' => [
             'sylius_admin.payment_method.create.content.form.sections.gateway_configuration.' . AutopayGateway::FACTORY_NAME => $gatewayConfiguration,
             'sylius_admin.payment_method.update.content.form.sections.gateway_configuration.' . AutopayGateway::FACTORY_NAME => $gatewayConfiguration,
+            // Autopay transaction, refunds and warnings next to the payment on the admin order page.
+            'sylius_admin.order.show.content.sections.payments.item' => [
+                AutopayGateway::FACTORY_NAME => [
+                    'template' => '@RefbergSyliusAutopayPlugin/admin/order/payment_details.html.twig',
+                    'priority' => 150,
+                ],
+            ],
         ]]);
     }
 
