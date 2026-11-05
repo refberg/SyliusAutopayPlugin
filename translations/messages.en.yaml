@@ -11,3 +11,14 @@ refberg_autopay:
             hash_algorithm: Hash algorithm
             secret_help: Stored encrypted. Leave empty to keep the current value.
             notify_url: 'ITN address to give Autopay for this service ID:'
+    ui:
+        remote_id: RemoteID
+        transactions: '%count% transactions'
+        refund: Refund
+        panel_refund: Refund in the Autopay panel
+        warning:
+            duplicate_payment: Paid twice – refund one payment in the Autopay panel
+            payment_completed_after_failure: Paid after the payment failed or was cancelled – refund it in the Autopay panel
+            paid_with_previous_payment_method: Paid with the Autopay method used before the customer switched methods
+            transaction_not_cancelled_at_autopay: Not cancelled at Autopay – check it in the Autopay panel
+            unknown: Warning

@@ -18,6 +18,7 @@ Nie korzysta z Payum.
 - Pełne zwroty z panelu administracyjnego. Ich status przychodzi w powiadomieniach ISTN albo odczytuje go polecenie
   konsoli; zwroty zrobione w panelu Autopay są synchronizowane przez ISTN.
 - Anulowanie płatności w Syliusie anuluje jej otwarte transakcje w Autopay.
+- Strona zamówienia w panelu admina pokazuje przy płatności transakcję Autopay (OrderID, RemoteID, status), zwroty i ostrzeżenia.
 - Dane dostępowe są szyfrowane przez Syliusa i nie trafiają do logów.
 
 Poza zakresem: wybór kanału płatności (bramki) w sklepie, BLIK level 0, karty i płatności cykliczne,

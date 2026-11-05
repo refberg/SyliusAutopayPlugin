@@ -24,6 +24,7 @@ It does not use Payum.
 - Full refunds from the admin panel. Their status comes with ISTN notifications or is read by a console command;
   refunds made in the Autopay panel are synchronized through ISTN.
 - Cancelling a payment in Sylius cancels its open Autopay transactions.
+- The admin order page shows the Autopay transaction (OrderID, RemoteID, status), refunds and warnings of each payment.
 - Credentials are stored encrypted by Sylius and are not written to logs.
 
 Out of scope: payment channel (gateway) selection in the shop, BLIK level 0, cards and recurring payments,

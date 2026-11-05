@@ -77,6 +77,12 @@ final class RefbergSyliusAutopayExtensionTest extends TestCase
         self::assertSame([['hooks' => [
             'sylius_admin.payment_method.create.content.form.sections.gateway_configuration.refberg_autopay' => $gatewayConfiguration,
             'sylius_admin.payment_method.update.content.form.sections.gateway_configuration.refberg_autopay' => $gatewayConfiguration,
+            'sylius_admin.order.show.content.sections.payments.item' => [
+                'refberg_autopay' => [
+                    'template' => '@RefbergSyliusAutopayPlugin/admin/order/payment_details.html.twig',
+                    'priority' => 150,
+                ],
+            ],
         ]]], $container->getExtensionConfig('sylius_twig_hooks'));
     }
 

@@ -11,3 +11,14 @@ refberg_autopay:
             hash_algorithm: Funkcja skrótu
             secret_help: Przechowywany w postaci zaszyfrowanej. Zostaw puste, aby nie zmieniać obecnej wartości.
             notify_url: 'Adres ITN do przekazania Autopay dla tego identyfikatora serwisu:'
+    ui:
+        remote_id: RemoteID
+        transactions: 'transakcje: %count%'
+        refund: Zwrot
+        panel_refund: Zwrot w panelu Autopay
+        warning:
+            duplicate_payment: Opłacone dwa razy – zwróć jedną wpłatę w panelu Autopay
+            payment_completed_after_failure: Opłacone po nieudanej lub anulowanej płatności – zwróć wpłatę w panelu Autopay
+            paid_with_previous_payment_method: Opłacone metodą Autopay użytą przed zmianą metody przez klienta
+            transaction_not_cancelled_at_autopay: Nieanulowane w Autopay – sprawdź w panelu Autopay
+            unknown: Ostrzeżenie
