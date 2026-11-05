@@ -142,8 +142,8 @@ final class RefundFlowTest extends IntegrationTestCase
     }
 
     /**
-     * Assumption A5 (docs/autopay.md): Autopay sends no notification about refunds made in its panel
-     * and refuses a refund larger than the remaining balance.
+     * Without ISTN the plugin does not know about refunds made in the Autopay panel,
+     * and Autopay refuses a refund larger than the remaining amount.
      */
     public function test_admin_refund_after_a_panel_refund_fails_and_is_left_to_the_merchant(): void
     {

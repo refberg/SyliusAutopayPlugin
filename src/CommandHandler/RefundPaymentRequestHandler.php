@@ -26,8 +26,8 @@ use function strtolower;
  * less refunds that are not canceled.
  *
  * MessageID is derived from the payment request hash, so a redelivered request does not create
- * a second refund in Autopay. Autopay does not notify about refunds; their final status is read
- * by the refberg:autopay:refresh-refunds command.
+ * a second refund in Autopay. The final status arrives with an ISTN (when Autopay enabled it for the service)
+ * or is read by the refberg:autopay:refresh-refunds command.
  *
  * @internal
  */
@@ -86,6 +86,16 @@ final readonly class RefundPaymentRequestHandler
         }
 
         $amount = (int) $payment->getAmount() - $details->activeRefundAmount();
+        if ($amount <= 0) {
+            $this->logger->info('Autopay refund not requested: refunds made in the Autopay panel already cover the payment.', [
+                'payment_id' => $payment->getId(),
+                'order_id' => $orderId,
+            ]);
+            $this->completeRequest($paymentRequest, ['order_id' => $orderId, 'covered_by_autopay_panel_refunds' => true]);
+
+            return;
+        }
+
         $currency = (string) $payment->getCurrencyCode();
         $messageId = str_replace('-', '', strtolower((string) $paymentRequest->getId()));
 

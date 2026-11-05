@@ -23,6 +23,7 @@ use function hash;
 use function htmlspecialchars;
 use function http_build_query;
 use function implode;
+use function intdiv;
 use function is_string;
 use function json_decode;
 use function json_encode;
@@ -53,7 +54,7 @@ final class FakeAutopay
 
     public const SHARED_KEY = 'test-shared-key';
 
-    /** Order of the transaction fields in the hash, as in the Autopay SDK (subset used by the plugin); ReturnURL: A1. */
+    /** Order of the transaction fields in the hash, as numbered in the Autopay documentation (subset used by the plugin). */
     public const TRANSACTION_FIELDS = ['ServiceID', 'OrderID', 'Amount', 'Description', 'GatewayID', 'Currency', 'CustomerEmail', 'CustomerIP', 'Title', 'ValidityTime', 'ReturnURL'];
 
     /** @var array<string, array{fields: array<string, string>, attempts: list<array<string, string>>}> */
@@ -72,6 +73,9 @@ final class FakeAutopay
     private array $queuedFailures = [];
 
     private int $counter = 0;
+
+    /** @var list<string> */
+    private array $cancelRequests = [];
 
     /**
      * @param array<string, mixed> $options
@@ -108,6 +112,7 @@ final class FakeAutopay
         return match ($path) {
             '/payment' => $this->startTransaction(self::form($body), $headers['bmheader'] ?? ''),
             '/webapi/transactionStatus' => $this->transactionStatus(self::form($body)),
+            '/webapi/transactionCancel' => $this->cancel(self::form($body)),
             '/settlementapi/transactionRefund' => $this->refund(self::form($body)),
             '/settlementapi/outDetails/v2' => $this->refundStatus($body),
             default => new MockResponse('ERROR', ['http_code' => 404]),
@@ -165,10 +170,38 @@ final class FakeAutopay
     /**
      * A refund the merchant made in the Autopay panel: Autopay sends no notification about it.
      */
-    public function panelRefund(string $orderId, int $amount): void
+    public function panelRefund(string $orderId, int $amount): string
     {
         $remoteId = $this->transaction($orderId)['attempts'][0]['remoteID'];
         $this->refunded[$remoteId] = ($this->refunded[$remoteId] ?? 0) + $amount;
+
+        return sprintf('ZWTR_PANEL%04d', ++$this->counter);
+    }
+
+    /**
+     * ISTN request body about a refund of the transaction (sent only when Autopay enabled ISTN for the service).
+     * $orderOutId is the MessageID of a refund requested by Sylius, or an Autopay ID for a panel refund.
+     */
+    public function istnBody(string $orderId, string $remoteOutId, ?string $orderOutId, int $amount, string $status, bool $isRefund = true, string $sharedKey = self::SHARED_KEY, string $currency = 'PLN'): string
+    {
+        $transaction = [
+            'isRefund' => $isRefund ? 'true' : 'false',
+            'orderID' => $orderId,
+            'orderOutID' => $orderOutId ?? 'AP' . $remoteOutId,
+            'remoteID' => $this->transaction($orderId)['attempts'][0]['remoteID'],
+            'remoteOutID' => $remoteOutId,
+            'amount' => sprintf('%d.%02d', intdiv($amount, 100), $amount % 100),
+            'currency' => $currency,
+            'transferDate' => '20260102120000',
+            'transferStatus' => $status,
+            'title' => 'Zwrot',
+        ];
+        $hash = self::sign(self::SERVICE_ID, ...array_values($transaction));
+        if (self::SHARED_KEY !== $sharedKey) {
+            $hash = hash('sha256', implode('|', [self::SERVICE_ID, ...array_values($transaction), $sharedKey]));
+        }
+
+        return http_build_query(['transactions' => base64_encode(self::transactionListXml(self::SERVICE_ID, [$transaction], $hash))]);
     }
 
     public function setRefundStatus(string $messageId, string $status): void
@@ -307,7 +340,7 @@ final class FakeAutopay
         if (1 !== preg_match('/^[A-Za-z0-9_-]{1,32}$/', $orderId) || 1 !== preg_match('/^\d+\.\d{2}$/', $form['Amount'])) {
             return self::error('INVALID_PARAMS', 200, 'Invalid OrderID or Amount.');
         }
-        // A1
+        // Autopay does not check OrderID uniqueness by default; the fake does, so tests catch a reused OrderID.
         if (isset($this->transactions[$orderId])) {
             return self::error('ORDER_ID_NOT_UNIQUE', 200);
         }
@@ -350,8 +383,7 @@ final class FakeAutopay
             return self::error('TRANSACTION_NOT_FOUND', 200);
         }
 
-        // A3: the response hash is not verified by the plugin, so the fake sends none.
-        return self::xml(self::transactionListXml(self::SERVICE_ID, $this->transactions[$orderId]['attempts'], null));
+        return self::xml(self::signedTransactionList($this->transactions[$orderId]['attempts']));
     }
 
     /**
@@ -370,7 +402,7 @@ final class FakeAutopay
             return self::error('INVALID_PARAMS', 200, 'MessageID must have 32 characters.');
         }
 
-        // A5: the same MessageID never refunds twice; a refund above the balance is refused.
+        // The same MessageID never refunds twice; a refund above the balance is refused.
         if (!isset($this->refunds[$messageId])) {
             $attempt = $this->attemptByRemoteId($remoteId);
             if (null === $attempt || 'SUCCESS' !== $attempt['paymentStatus']) {
@@ -393,7 +425,7 @@ final class FakeAutopay
         }
 
         return self::xml(sprintf(
-            '<refund><serviceID>%s</serviceID><messageID>%s</messageID><hash>%s</hash></refund>',
+            '<transactionRefund><serviceID>%s</serviceID><messageID>%s</messageID><hash>%s</hash></transactionRefund>',
             self::SERVICE_ID,
             $messageId,
             self::sign(self::SERVICE_ID, $messageId),
@@ -402,22 +434,106 @@ final class FakeAutopay
 
     private function refundStatus(string $body): MockResponse
     {
-        /** @var array<string, string> $data */
+        /** @var array{serviceId?: int, messageId?: string, method?: string, hash?: string} $data */
         $data = json_decode($body, true, 8, JSON_THROW_ON_ERROR);
-        $hash = $data['Hash'] ?? '';
-        if ($hash !== self::sign($data['serviceId'] ?? '', $data['messageId'] ?? '', $data['method'] ?? '')) {
+        $hash = $data['hash'] ?? '';
+        if ($hash !== self::sign((string) ($data['serviceId'] ?? ''), $data['messageId'] ?? '', $data['method'] ?? '')) {
             return new MockResponse(json_encode(['result' => 'ERROR', 'errorStatus' => 'INVALID_HASH'], JSON_THROW_ON_ERROR), ['http_code' => 400]);
         }
 
-        $refund = $this->refunds[$data['messageId'] ?? ''] ?? null;
+        $data['messageId'] ??= '';
+        $refund = $this->refunds[$data['messageId']] ?? null;
         if (null === $refund) {
             return new MockResponse(json_encode(['result' => 'ERROR', 'errorStatus' => 'NOT_FOUND'], JSON_THROW_ON_ERROR), ['http_code' => 404]);
         }
 
-        return new MockResponse(json_encode(['Status' => $refund['status'], 'messageId' => $data['messageId']], JSON_THROW_ON_ERROR), [
+        $remoteOutId = 'DONE' === $refund['status'] ? 'ZWTR_' . $data['messageId'] : null;
+
+        return new MockResponse(json_encode([
+            'serviceId' => (int) self::SERVICE_ID,
+            'balancePointId' => null,
+            'messageId' => $data['messageId'],
+            'status' => $refund['status'],
+            'remoteOutId' => $remoteOutId,
+            'hash' => self::sign(self::SERVICE_ID, $data['messageId'], $refund['status'], (string) $remoteOutId),
+            'errorStatus' => null,
+            'errorStatusCode' => null,
+            'errorMessages' => null,
+        ], JSON_THROW_ON_ERROR), [
             'http_code' => 200,
             'response_headers' => ['Content-Type' => 'application/json'],
         ]);
+    }
+
+    /**
+     * @param array<string, string> $form
+     */
+    private function cancel(array $form): MockResponse
+    {
+        $error = $this->checkHash($form);
+        if ($error instanceof MockResponse) {
+            return $error;
+        }
+
+        $messageId = $form['MessageID'] ?? '';
+        $orderId = $form['OrderID'] ?? '';
+        $this->cancelRequests[] = $orderId;
+        if (!isset($this->transactions[$orderId])) {
+            return self::xml('<transaction><confirmation>NOTCONFIRMED</confirmation><reason>TRANSACTION_NOT_FOUND</reason></transaction>');
+        }
+
+        $cancelled = 0;
+        $other = 0;
+        $attempts = [];
+        foreach ($this->transactions[$orderId]['attempts'] as $attempt) {
+            if ('PENDING' === $attempt['paymentStatus']) {
+                $attempt['paymentStatus'] = 'FAILURE';
+                ++$cancelled;
+            } elseif ('SUCCESS' === $attempt['paymentStatus']) {
+                ++$other;
+            }
+            $attempts[] = $attempt;
+        }
+        $this->transactions[$orderId]['attempts'] = $attempts;
+
+        if (0 === $cancelled) {
+            return self::xml('<transaction><confirmation>NOTCONFIRMED</confirmation><reason>INCORRECT_PAYMENT_STATUS</reason></transaction>');
+        }
+
+        $reason = 0 === $other ? 'CANCELED_FULLY' : 'CANCELED_PARTIALLY';
+
+        return self::xml(sprintf(
+            '<transaction><serviceID>%s</serviceID><messageID>%s</messageID><confirmation>CONFIRMED</confirmation><reason>%s</reason><hash>%s</hash></transaction>',
+            self::SERVICE_ID,
+            $messageId,
+            $reason,
+            self::sign(self::SERVICE_ID, $messageId, 'CONFIRMED', $reason),
+        ));
+    }
+
+    /**
+     * transactionStatus answer: the hash covers serviceID and the fields of every attempt in order.
+     *
+     * @param list<array<string, string>> $attempts
+     */
+    public static function signedTransactionList(array $attempts): string
+    {
+        $values = [self::SERVICE_ID];
+        foreach ($attempts as $attempt) {
+            foreach ($attempt as $value) {
+                $values[] = $value;
+            }
+        }
+
+        return self::transactionListXml(self::SERVICE_ID, $attempts, self::sign(...$values));
+    }
+
+    /**
+     * @return list<string> OrderIDs passed to transactionCancel
+     */
+    public function cancelRequests(): array
+    {
+        return $this->cancelRequests;
     }
 
     /**
@@ -428,7 +544,7 @@ final class FakeAutopay
         $hash = $form['Hash'] ?? '';
         unset($form['Hash']);
         if (($form['ServiceID'] ?? null) !== self::SERVICE_ID) {
-            // A2
+            // A1
             return self::error('INVALID_SERVICE_ID', 200);
         }
 
@@ -481,6 +597,10 @@ final class FakeAutopay
 
     private static function error(string $name, int $httpStatus, string $description = ''): MockResponse
     {
+        if ('' === $name) {
+            return new MockResponse('ERROR', ['http_code' => $httpStatus]);
+        }
+
         return new MockResponse(sprintf(
             '<?xml version="1.0" encoding="UTF-8"?>' . "\n" . '<error><statusCode>%d</statusCode><name>%s</name><description>%s</description></error>',
             count([$name]),

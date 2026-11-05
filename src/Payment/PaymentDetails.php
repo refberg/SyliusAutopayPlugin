@@ -20,7 +20,8 @@ use function is_string;
  *   orders:             map OrderID => {service_id, remote_id, status, amount, currency}
  *   current_order_id:   OrderID started most recently for this payment
  *   completed_order_id: OrderID that completed this payment
- *   refunds:            map MessageID => {status, amount, currency, remote_id}
+ *   refunds:            map MessageID => {status, amount, currency, remote_id, remote_out_id?};
+ *                       refunds made in the Autopay panel: "autopay-<remoteOutID>" => {..., external: true}
  *   warnings:           list of {type, order_id}
  *
  * Only scalars and arrays are stored, so the data stays JSON-serializable.
@@ -33,6 +34,7 @@ final class PaymentDetails
 
     public const WARNING_PAYMENT_METHOD_CHANGED = 'paid_with_previous_payment_method';
 
+    /** The transaction belongs to another Autopay service, so the plugin could not cancel it. */
     public const WARNING_NOT_CANCELLED = 'transaction_not_cancelled_at_autopay';
 
     /** @var array<array-key, mixed> */
@@ -225,14 +227,14 @@ final class PaymentDetails
     }
 
     /**
-     * @return list<string> MessageIDs of refunds whose final status is not known yet
+     * @return list<string> MessageIDs of refunds requested by Sylius whose final status is not known yet
      */
     public function getPendingRefundIds(): array
     {
         $pending = [];
         foreach ($this->refunds() as $messageId => $refund) {
             $status = $refund['status'] ?? null;
-            if (!RefundCreated::isFinalStatus(is_string($status) ? $status : null)) {
+            if (true !== ($refund['external'] ?? false) && !RefundCreated::isFinalStatus(is_string($status) ? $status : null)) {
                 $pending[] = (string) $messageId;
             }
         }
@@ -253,13 +255,50 @@ final class PaymentDetails
         return $this->refundAmount(static fn (mixed $status): bool => RefundCreated::STATUS_CANCELED !== $status);
     }
 
+    public function hasRefund(string $key): bool
+    {
+        return isset($this->refunds()[$key]);
+    }
+
+    public function setRefundRemoteOutId(string $key, string $remoteOutId): void
+    {
+        $refunds = $this->refunds();
+        if (isset($refunds[$key])) {
+            $refunds[$key]['remote_out_id'] = $remoteOutId;
+            $this->data['refunds'] = $refunds;
+        }
+    }
+
     /**
-     * A refund requested by Sylius that is done or still in progress.
+     * Records a refund made outside Sylius (in the Autopay panel), reported by an ISTN.
+     *
+     * @return string key of the refund
+     */
+    public function recordExternalRefund(string $remoteOutId, string $status, int $amount, string $currency): string
+    {
+        $key = 'autopay-' . $remoteOutId;
+        $refunds = $this->refunds();
+        if (!isset($refunds[$key])) {
+            $refunds[$key] = [
+                'remote_out_id' => $remoteOutId,
+                'status' => $status,
+                'amount' => $amount,
+                'currency' => $currency,
+                'external' => true,
+            ];
+            $this->data['refunds'] = $refunds;
+        }
+
+        return $key;
+    }
+
+    /**
+     * Only refunds requested by Sylius count; refunds made in the Autopay panel are covered by activeRefundAmount().
      */
     public function hasActiveRefund(): bool
     {
         foreach ($this->refunds() as $refund) {
-            if (($refund['status'] ?? null) !== RefundCreated::STATUS_CANCELED) {
+            if (true !== ($refund['external'] ?? false) && ($refund['status'] ?? null) !== RefundCreated::STATUS_CANCELED) {
                 return true;
             }
         }

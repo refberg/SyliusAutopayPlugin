@@ -10,6 +10,7 @@ use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayApiException;
 use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayTransportException;
 use Refberg\SyliusAutopayPlugin\Api\Model\AutopayTransaction;
 use Refberg\SyliusAutopayPlugin\Api\Model\RefundCreated;
+use Refberg\SyliusAutopayPlugin\Api\Model\TransactionCancelled;
 use Refberg\SyliusAutopayPlugin\Api\Model\TransactionStarted;
 use Refberg\SyliusAutopayPlugin\Config\AutopayCredentials;
 use Refberg\SyliusAutopayPlugin\Signature\SignatureVerifierInterface;
@@ -56,6 +57,9 @@ final readonly class AutopayClient implements AutopayClientInterface
         $orderId = $parameters['OrderID'] ?? '';
         [$statusCode, $xml] = $this->postForm($credentials, '/payment', ['ServiceID' => $credentials->serviceId] + $parameters, self::HEADER_CONTINUE);
         $this->assertNoError('Starting Autopay transaction failed', $statusCode, $xml);
+        if ($xml instanceof SimpleXMLElement && 'NOTCONFIRMED' === Xml::text($xml, 'confirmation')) {
+            throw $this->rejected('Autopay refused the transaction', $statusCode, Xml::text($xml, 'reason'));
+        }
 
         if (
             !$xml instanceof SimpleXMLElement ||
@@ -82,12 +86,16 @@ final readonly class AutopayClient implements AutopayClientInterface
             'OrderID' => $orderId,
         ], self::HEADER_API);
         $this->assertNoError('Retrieving Autopay transaction failed', $statusCode, $xml);
-        if (!$xml instanceof SimpleXMLElement) {
-            throw $this->invalidResponse('Autopay transaction status response is not XML.', $statusCode);
+        if (
+            !$xml instanceof SimpleXMLElement ||
+            !$this->signatureVerifier->verify(Xml::signedValues($xml), Xml::text($xml, 'hash'), $credentials)
+        ) {
+            throw $this->invalidResponse('Autopay transaction status response has an invalid hash or body.', $statusCode);
         }
 
         $serviceId = Xml::text($xml, 'serviceID');
         $success = $pending = $failure = null;
+        $paidRemoteIds = [];
         $items = $xml->xpath('//transaction');
         foreach (is_array($items) ? $items : [] as $item) {
             $itemOrderId = Xml::text($item, 'orderID') ?? Xml::text($xml, 'orderID');
@@ -102,7 +110,12 @@ final readonly class AutopayClient implements AutopayClientInterface
                 throw $this->invalidResponse('Autopay transaction status response is incomplete.', $statusCode);
             }
 
-            $transaction = new AutopayTransaction($orderId, Xml::text($item, 'remoteID'), $status, $amount, $currency, $serviceId);
+            $remoteId = Xml::text($item, 'remoteID');
+            if (AutopayTransaction::STATUS_SUCCESS === $status && null !== $remoteId) {
+                $paidRemoteIds[] = $remoteId;
+            }
+
+            $transaction = new AutopayTransaction($orderId, $remoteId, $status, $amount, $currency, $serviceId);
             match ($status) {
                 AutopayTransaction::STATUS_SUCCESS => $success ??= $transaction,
                 AutopayTransaction::STATUS_FAILURE => $failure = $transaction,
@@ -110,7 +123,41 @@ final readonly class AutopayClient implements AutopayClientInterface
             };
         }
 
-        return $success ?? $pending ?? $failure ?? throw new AutopayApiException('Autopay has no transaction with this OrderID.', 404);
+        if ($success instanceof AutopayTransaction) {
+            return new AutopayTransaction($orderId, $success->remoteId, $success->status, $success->amount, $success->currency, $serviceId, $paidRemoteIds);
+        }
+
+        return $pending ?? $failure ?? throw new AutopayApiException('Autopay has no transaction with this OrderID.', 404);
+    }
+
+    public function cancelTransaction(AutopayCredentials $credentials, string $orderId, string $messageId): TransactionCancelled
+    {
+        [$statusCode, $xml] = $this->postForm($credentials, '/webapi/transactionCancel', [
+            'ServiceID' => $credentials->serviceId,
+            'MessageID' => $messageId,
+            'OrderID' => $orderId,
+        ], self::HEADER_API);
+        $this->assertNoError('Cancelling Autopay transaction failed', $statusCode, $xml);
+
+        $confirmation = $xml instanceof SimpleXMLElement ? Xml::text($xml, 'confirmation') : null;
+        $reason = $xml instanceof SimpleXMLElement ? Xml::text($xml, 'reason') : null;
+        if ('NOTCONFIRMED' === $confirmation) {
+            return new TransactionCancelled(false, $reason);
+        }
+
+        // The hash is required for CONFIRMED answers only.
+        if (
+            !$xml instanceof SimpleXMLElement ||
+            'CONFIRMED' !== $confirmation ||
+            Xml::text($xml, 'messageID') !== $messageId ||
+            !$this->signatureVerifier->verify(Xml::signedValues($xml), Xml::text($xml, 'hash'), $credentials)
+        ) {
+            throw $this->invalidResponse('Autopay cancellation response has an invalid hash or body.', $statusCode);
+        }
+
+        $this->logger->info('Autopay transaction cancelled.', ['order_id' => $orderId, 'reason' => $reason]);
+
+        return new TransactionCancelled(true, $reason);
     }
 
     public function createRefund(AutopayCredentials $credentials, string $remoteId, int $amount, string $currency, string $messageId): RefundCreated
@@ -140,11 +187,11 @@ final readonly class AutopayClient implements AutopayClientInterface
     public function retrieveRefundStatus(AutopayCredentials $credentials, string $messageId): string
     {
         $body = [
-            'serviceId' => $credentials->serviceId,
+            'serviceId' => (int) $credentials->serviceId,
             'messageId' => $messageId,
             'method' => self::REFUND_METHOD,
+            'hash' => $this->signatureVerifier->sign([$credentials->serviceId, $messageId, self::REFUND_METHOD], $credentials),
         ];
-        $body['Hash'] = $this->signatureVerifier->sign(array_values($body), $credentials);
 
         $response = $this->send('POST', $credentials->environment->baseUrl() . '/settlementapi/outDetails/v2', [
             'headers' => [self::HEADER => self::HEADER_API, 'Accept' => 'application/json'],
@@ -153,11 +200,18 @@ final readonly class AutopayClient implements AutopayClientInterface
         [$statusCode, $content] = $this->read($response);
 
         $data = json_decode($content, true);
-        $status = is_array($data) ? (Json::string($data, 'Status') ?? Json::string($data, 'status')) : null;
-        if (200 !== $statusCode || null === $status) {
-            $this->logger->error('Reading Autopay refund status failed.', ['http_status' => $statusCode, 'message_id' => $messageId]);
+        $data = is_array($data) ? $data : [];
+        $status = Json::string($data, 'status');
+        $error = Json::string($data, 'errorStatus');
+        if (200 !== $statusCode || null !== $error || null === $status) {
+            $this->logger->error('Reading Autopay refund status failed.', ['http_status' => $statusCode, 'message_id' => $messageId, 'autopay_error' => $error]);
 
-            throw new AutopayApiException(sprintf('Reading Autopay refund status failed (HTTP %d).', $statusCode), $statusCode);
+            throw new AutopayApiException(sprintf('Reading Autopay refund status failed (HTTP %d%s).', $statusCode, null !== $error ? ', ' . $error : ''), $statusCode, $error);
+        }
+
+        $hashValues = [(string) Json::string($data, 'serviceId'), $messageId, $status, (string) Json::string($data, 'remoteOutId')];
+        if (Json::string($data, 'messageId') !== $messageId || !$this->signatureVerifier->verify($hashValues, Json::string($data, 'hash'), $credentials)) {
+            throw $this->invalidResponse('Autopay refund status response has an invalid hash or body.', $statusCode);
         }
 
         return match (true) {
@@ -223,8 +277,9 @@ final readonly class AutopayClient implements AutopayClientInterface
             return;
         }
 
-        $name = $isError ? Xml::text($xml, 'name') : null;
-        $description = $isError ? Xml::text($xml, 'description') : null;
+        // <error><name/><description/></error>, or <transaction><reason/><description/></transaction> for some HTTP errors.
+        $name = $xml instanceof SimpleXMLElement ? Xml::text($xml, 'name') ?? Xml::text($xml, 'reason') : null;
+        $description = $xml instanceof SimpleXMLElement ? Xml::text($xml, 'description') : null;
 
         $this->logger->error($message . '.', ['http_status' => $statusCode, 'autopay_error' => $name]);
 
@@ -239,6 +294,13 @@ final readonly class AutopayClient implements AutopayClientInterface
             $statusCode,
             $name,
         );
+    }
+
+    private function rejected(string $message, int $statusCode, ?string $reason): AutopayApiException
+    {
+        $this->logger->error($message . '.', ['http_status' => $statusCode, 'autopay_error' => $reason]);
+
+        return new AutopayApiException(sprintf('%s (%s).', $message, $reason ?? 'no reason'), $statusCode, $reason);
     }
 
     private function invalidResponse(string $message, int $statusCode): AutopayApiException

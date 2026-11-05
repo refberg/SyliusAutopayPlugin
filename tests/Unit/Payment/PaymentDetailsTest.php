@@ -93,6 +93,28 @@ final class PaymentDetailsTest extends TestCase
         self::assertTrue($details->hasActiveRefund());
     }
 
+    public function test_external_refunds_count_for_the_amount_but_not_as_requested_by_sylius(): void
+    {
+        $details = self::details();
+
+        $key = $details->recordExternalRefund('ZWTR_1', 'DONE', 500, 'PLN');
+        self::assertSame($key, $details->recordExternalRefund('ZWTR_1', 'PENDING', 999, 'PLN'));
+
+        self::assertSame('autopay-ZWTR_1', $key);
+        self::assertTrue($details->hasRefund($key));
+        self::assertFalse($details->hasActiveRefund());
+        self::assertSame(500, $details->activeRefundAmount());
+        self::assertSame(500, $details->finalizedRefundAmount());
+        self::assertSame([], $details->getPendingRefundIds());
+
+        $details->recordRefund('M1', 'R1', 'PENDING', 1000, 'PLN');
+        $details->setRefundRemoteOutId('M1', 'ZWTR_2');
+        $details->setRefundRemoteOutId('M9', 'ZWTR_3');
+        self::assertTrue($details->hasActiveRefund());
+        self::assertSame('ZWTR_2', $details->refunds()['M1']['remote_out_id']);
+        self::assertFalse($details->hasRefund('M9'));
+    }
+
     public function test_only_canceled_refunds_are_not_active(): void
     {
         $details = self::details();

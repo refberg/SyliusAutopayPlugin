@@ -6,6 +6,7 @@ namespace Refberg\SyliusAutopayPlugin\Provider;
 
 use Refberg\SyliusAutopayPlugin\Config\CredentialsResolverInterface;
 use Refberg\SyliusAutopayPlugin\Config\InvalidConfigurationException;
+use Refberg\SyliusAutopayPlugin\Notification\ConfirmationFactoryInterface;
 use Refberg\SyliusAutopayPlugin\Notification\Notification;
 use Refberg\SyliusAutopayPlugin\Notification\NotificationParserInterface;
 use Refberg\SyliusAutopayPlugin\Order\ExtOrderIdGeneratorInterface;
@@ -20,11 +21,11 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 
 /**
- * Finds the payment an Autopay ITN belongs to.
+ * Finds the payment an Autopay ITN or ISTN belongs to.
  *
- * Runs before Sylius stores anything, so ITNs with a missing or wrong hash are rejected with HTTP 400
+ * Runs before Sylius stores anything, so notifications with a missing or wrong hash are rejected with HTTP 400
  * and never create a payment request. The payment is found by the OrderID (and service ID) stored
- * in its details, not by its current payment method.
+ * in its details, not by its current payment method. ISTNs about settlements are confirmed and ignored.
  */
 final readonly class AutopayNotifyPaymentProvider implements NotifyPaymentProviderInterface
 {
@@ -36,6 +37,7 @@ final readonly class AutopayNotifyPaymentProvider implements NotifyPaymentProvid
         private NotificationParserInterface $notificationParser,
         private ExtOrderIdGeneratorInterface $extOrderIdGenerator,
         private RepositoryInterface $paymentRepository,
+        private ConfirmationFactoryInterface $confirmationFactory,
     ) {
     }
 
@@ -57,9 +59,14 @@ final readonly class AutopayNotifyPaymentProvider implements NotifyPaymentProvid
             throw new BadRequestHttpException('Invalid Autopay notification hash or body.');
         }
 
-        $paymentId = $this->extOrderIdGenerator->extractPaymentId($notification->orderId);
+        if (Notification::TYPE_SETTLEMENT === $notification->type) {
+            throw new AcknowledgedNotificationException($this->confirmationFactory->create($notification, $credentials, true));
+        }
+
+        $orderId = (string) $notification->orderId;
+        $paymentId = $this->extOrderIdGenerator->extractPaymentId($orderId);
         $payment = null !== $paymentId ? $this->paymentRepository->find($paymentId) : null;
-        if (!$payment instanceof PaymentInterface || !PaymentDetails::of($payment)->hasOrderOfService($notification->orderId, $credentials->serviceId)) {
+        if (!$payment instanceof PaymentInterface || !PaymentDetails::of($payment)->hasOrderOfService($orderId, $credentials->serviceId)) {
             throw new NotFoundHttpException('No payment matches this Autopay notification.');
         }
 

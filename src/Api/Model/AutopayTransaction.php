@@ -26,6 +26,8 @@ final readonly class AutopayTransaction
         public int $amount,
         public string $currency,
         public ?string $serviceId,
+        /** @var list<string> RemoteIDs of all successful attempts; more than one means the OrderID was paid more than once */
+        public array $paidRemoteIds = [],
     ) {
     }
 

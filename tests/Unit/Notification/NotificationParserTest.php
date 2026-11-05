@@ -34,6 +34,27 @@ final class NotificationParserTest extends TestCase
         self::assertEquals(new Notification(Notification::TYPE_TRANSACTION, FakeAutopay::SERVICE_ID, 'ORDER-1', 'R1', 'SUCCESS'), $notification);
     }
 
+    public function test_it_parses_a_signed_istn_about_a_refund(): void
+    {
+        $transaction = ['isRefund' => 'true', 'orderID' => 'ORDER-1', 'orderOutID' => 'M1', 'remoteID' => 'R1', 'remoteOutID' => 'ZWTR_1', 'amount' => '5.50', 'currency' => 'PLN', 'transferStatus' => 'SUCCESS'];
+
+        $notification = self::parser()->parse(self::body(FakeAutopay::transactionListXml('100001', [$transaction], FakeAutopay::sign('100001', ...array_values($transaction)))), Credentials::fake());
+
+        self::assertEquals(new Notification(Notification::TYPE_REFUND, '100001', 'ORDER-1', 'R1', 'SUCCESS', 'M1', 'ZWTR_1', 550, 'PLN'), $notification);
+        self::assertTrue($notification?->isTransfer());
+    }
+
+    public function test_istn_without_refund_flag_is_a_settlement_and_needs_a_remote_out_id(): void
+    {
+        $settlement = ['isRefund' => 'false', 'remoteOutID' => 'ROZL_1', 'amount' => '100.00', 'currency' => 'PLN', 'transferStatus' => 'SUCCESS'];
+        $withoutId = ['isRefund' => 'true', 'orderID' => 'ORDER-1', 'transferStatus' => 'SUCCESS'];
+
+        $notification = self::parser()->parse(self::body(FakeAutopay::transactionListXml('100001', [$settlement], FakeAutopay::sign('100001', ...array_values($settlement)))), Credentials::fake());
+
+        self::assertSame(Notification::TYPE_SETTLEMENT, $notification?->type);
+        self::assertNull(self::parser()->parse(self::body(FakeAutopay::transactionListXml('100001', [$withoutId], FakeAutopay::sign('100001', ...array_values($withoutId)))), Credentials::fake()));
+    }
+
     public function test_nested_customer_data_is_covered_by_the_hash(): void
     {
         $xml = '<?xml version="1.0" encoding="UTF-8"?><transactionList><serviceID>100001</serviceID><transactions><transaction>' .

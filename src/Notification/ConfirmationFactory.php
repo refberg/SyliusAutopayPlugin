@@ -19,13 +19,15 @@ final readonly class ConfirmationFactory implements ConfirmationFactoryInterface
     public function create(Notification $notification, AutopayCredentials $credentials, bool $confirmed): string
     {
         $confirmation = $confirmed ? self::CONFIRMED : self::NOT_CONFIRMED;
-        $hash = $this->signatureVerifier->sign([$credentials->serviceId, $notification->orderId, $confirmation], $credentials);
+        // An ITN is confirmed by orderID, an ISTN by remoteOutID (hash order of the ISTN answer: assumption A2 in docs/autopay.md).
+        [$element, $id] = $notification->isTransfer() ? ['remoteOutID', (string) $notification->remoteOutId] : ['orderID', (string) $notification->orderId];
+        $hash = $this->signatureVerifier->sign([$credentials->serviceId, $id, $confirmation], $credentials);
 
         return '<?xml version="1.0" encoding="UTF-8"?>' . "\n" .
             '<confirmationList>' .
             '<serviceID>' . self::escape($credentials->serviceId) . '</serviceID>' .
             '<transactionsConfirmations><transactionConfirmed>' .
-            '<orderID>' . self::escape($notification->orderId) . '</orderID>' .
+            '<' . $element . '>' . self::escape($id) . '</' . $element . '>' .
             '<confirmation>' . $confirmation . '</confirmation>' .
             '</transactionConfirmed></transactionsConfirmations>' .
             '<hash>' . $hash . '</hash>' .

@@ -7,6 +7,7 @@ namespace Refberg\SyliusAutopayPlugin\Api;
 use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayException;
 use Refberg\SyliusAutopayPlugin\Api\Model\AutopayTransaction;
 use Refberg\SyliusAutopayPlugin\Api\Model\RefundCreated;
+use Refberg\SyliusAutopayPlugin\Api\Model\TransactionCancelled;
 use Refberg\SyliusAutopayPlugin\Api\Model\TransactionStarted;
 use Refberg\SyliusAutopayPlugin\Config\AutopayCredentials;
 
@@ -25,6 +26,13 @@ interface AutopayClientInterface
      * @throws AutopayException
      */
     public function retrieveTransaction(AutopayCredentials $credentials, string $orderId): AutopayTransaction;
+
+    /**
+     * Cancels the attempts of an OrderID that wait for a payment. The same $messageId is never processed twice.
+     *
+     * @throws AutopayException
+     */
+    public function cancelTransaction(AutopayCredentials $credentials, string $orderId, string $messageId): TransactionCancelled;
 
     /**
      * Requests a refund of a paid transaction. The same $messageId never creates a second refund.

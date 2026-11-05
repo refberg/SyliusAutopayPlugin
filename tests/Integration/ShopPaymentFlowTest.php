@@ -285,6 +285,21 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
         self::assertSame($remoteId, PaymentDetails::of($payment)->getRemoteId($orderId));
     }
 
+    public function test_order_id_paid_twice_on_the_autopay_page_is_flagged(): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->payInShop();
+        $orderId = $this->autopay->lastOrderId();
+        $this->autopay->setStatus($orderId, 'SUCCESS');
+        $this->autopay->addAttempt($orderId, 'SUCCESS');
+
+        self::assertSame(Response::HTTP_OK, $this->notifyOrder($orderId)->getStatusCode());
+
+        $payment = $this->reloadPayment($payment);
+        self::assertSame('completed', $payment->getState());
+        self::assertSame([['type' => PaymentDetails::WARNING_DUPLICATE_PAYMENT, 'order_id' => $orderId]], PaymentDetails::of($payment)->warnings());
+    }
+
     public function test_two_paid_transactions_never_pay_the_sylius_order_twice(): void
     {
         $payment = $this->createPlacedOrder();
@@ -310,12 +325,12 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
     }
 
     /**
-     * A2, A4 (docs/autopay.md).
+     * A1 (docs/autopay.md); Autopay repeats an ITN until it gets a correct answer.
      */
     #[TestWith([503, 'SYSTEM_ERROR'])]
     #[TestWith([200, 'INVALID_HASH'])]
-    #[TestWith([401, 'UNAUTHORIZED'])]
-    #[TestWith([403, 'FORBIDDEN'])]
+    #[TestWith([401, ''])]
+    #[TestWith([403, ''])]
     public function test_transient_or_authorization_api_error_returns_5xx_so_autopay_retries(int $httpStatus, string $errorName): void
     {
         $payment = $this->createPlacedOrder();
@@ -333,7 +348,7 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
     }
 
     /**
-     * A4 (docs/autopay.md).
+     * An ITN rejected for good is confirmed, so Autopay stops repeating it.
      */
     public function test_permanent_api_error_is_confirmed_and_recorded(): void
     {
@@ -352,7 +367,7 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
     }
 
     /**
-     * A7 (docs/autopay.md).
+     * A5 (docs/autopay.md).
      */
     #[TestWith(['notification'])]
     #[TestWith(['return'])]

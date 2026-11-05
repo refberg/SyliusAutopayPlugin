@@ -21,6 +21,7 @@ use Refberg\SyliusAutopayPlugin\CommandProvider\PaymentRequestCommandProvider;
 use Refberg\SyliusAutopayPlugin\Config\CredentialsResolver;
 use Refberg\SyliusAutopayPlugin\Config\CredentialsResolverInterface;
 use Refberg\SyliusAutopayPlugin\Console\RefreshRefundsCommand;
+use Refberg\SyliusAutopayPlugin\EventListener\AcknowledgedNotificationListener;
 use Refberg\SyliusAutopayPlugin\EventListener\PaymentTransitionListener;
 use Refberg\SyliusAutopayPlugin\Form\Type\AutopayGatewayConfigurationType;
 use Refberg\SyliusAutopayPlugin\Notification\ConfirmationFactory;
@@ -152,7 +153,7 @@ return static function (ContainerConfigurator $container): void {
         StatusPaymentRequestHandler::class => [service(PaymentSynchronizerInterface::class)],
         NotifyPaymentRequestHandler::class => [service(NotificationParserInterface::class), service(PaymentSynchronizerInterface::class)],
         RefundPaymentRequestHandler::class => [service(AutopayClientInterface::class)],
-        CancelPaymentRequestHandler::class => [],
+        CancelPaymentRequestHandler::class => [service(AutopayClientInterface::class)],
     ];
     foreach ($handlerArguments as $handler => $arguments) {
         $services->set($handler)
@@ -167,15 +168,19 @@ return static function (ContainerConfigurator $container): void {
             ->tag('monolog.logger', ['channel' => 'autopay']);
     }
 
-    // Notifications (ITN)
+    // Notifications (ITN and ISTN)
     $services->set(AutopayNotifyPaymentProvider::class)
         ->args([
             service(CredentialsResolverInterface::class),
             service(NotificationParserInterface::class),
             service(ExtOrderIdGeneratorInterface::class),
             service('sylius.repository.payment'),
+            service(ConfirmationFactoryInterface::class),
         ])
         ->tag('sylius.payment_request.payment_notify_provider');
+
+    $services->set(AcknowledgedNotificationListener::class)
+        ->tag('kernel.event_listener', ['event' => 'kernel.exception', 'priority' => 64]);
 
     $services->set(NotifyResponseProvider::class)
         ->decorate('sylius.provider.payment_request.notify_response')

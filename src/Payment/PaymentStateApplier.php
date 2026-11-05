@@ -10,14 +10,15 @@ use Refberg\SyliusAutopayPlugin\Api\Model\AutopayTransaction;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Component\Payment\Model\PaymentInterface;
 use Sylius\Component\Payment\PaymentTransitions;
+use function count;
 
 /**
  * The only place where the plugin changes the state of a Sylius payment.
  *
  * Input must be a transaction read from the Autopay API and validated against the payment.
  * Rules are monotonic, so duplicated or out-of-order notifications cannot change the outcome:
- *  - SUCCESS completes the payment once; a second OrderID of the same payment that succeeds
- *    is recorded as a warning and never pays the order twice,
+ *  - SUCCESS completes the payment once; a second OrderID of the same payment that succeeds,
+ *    or a second successful attempt of the same OrderID, is recorded as a warning and never pays the order twice,
  *  - FAILURE fails the payment only when no other OrderID of this payment may still be paid,
  *  - PENDING never changes the payment state.
  */
@@ -33,6 +34,15 @@ final readonly class PaymentStateApplier implements PaymentStateApplierInterface
     {
         $details = PaymentDetails::of($payment);
         $details->recordOrderStatus($transaction->orderId, $transaction->status, $transaction->remoteId);
+
+        if (count($transaction->paidRemoteIds) > 1) {
+            $details->addWarning(PaymentDetails::WARNING_DUPLICATE_PAYMENT, $transaction->orderId);
+            $this->logger->error('Autopay transaction was paid more than once. Manual refund may be needed.', [
+                'payment_id' => $payment->getId(),
+                'order_id' => $transaction->orderId,
+                'remote_ids' => $transaction->paidRemoteIds,
+            ]);
+        }
 
         $result = match ($transaction->status) {
             AutopayTransaction::STATUS_SUCCESS => $this->onSuccess($payment, $details, $transaction),

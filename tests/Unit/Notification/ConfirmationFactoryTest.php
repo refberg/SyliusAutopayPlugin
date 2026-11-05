@@ -32,6 +32,19 @@ final class ConfirmationFactoryTest extends TestCase
         ]);
     }
 
+    public function test_istn_is_confirmed_by_remote_out_id(): void
+    {
+        $credentials = new AutopayCredentials('1', 'key', HashAlgorithm::Sha256, Environment::Sandbox);
+        $notification = new Notification(Notification::TYPE_REFUND, '1', 'O1', remoteOutId: 'ZWTR_1');
+
+        $xml = Xml::parse((new ConfirmationFactory(new SignatureVerifier()))->create($notification, $credentials, true));
+
+        self::assertInstanceOf(SimpleXMLElement::class, $xml);
+        self::assertSame('ZWTR_1', (string) $xml->transactionsConfirmations->transactionConfirmed->remoteOutID);
+        self::assertSame(0, $xml->transactionsConfirmations->transactionConfirmed->orderID->count());
+        self::assertSame((new SignatureVerifier())->sign(['1', 'ZWTR_1', 'CONFIRMED'], $credentials), (string) $xml->hash);
+    }
+
     public function test_not_confirmed_and_special_characters(): void
     {
         $credentials = new AutopayCredentials('1', 'key', HashAlgorithm::Sha256, Environment::Sandbox);

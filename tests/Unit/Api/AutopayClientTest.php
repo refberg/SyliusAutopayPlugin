@@ -12,6 +12,7 @@ use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayApiException;
 use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayTransportException;
 use Refberg\SyliusAutopayPlugin\Api\Model\AutopayTransaction;
 use Refberg\SyliusAutopayPlugin\Api\Model\RefundCreated;
+use Refberg\SyliusAutopayPlugin\Api\Model\TransactionCancelled;
 use Refberg\SyliusAutopayPlugin\Signature\SignatureVerifier;
 use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -104,15 +105,44 @@ final class AutopayClientTest extends TestCase
     #[TestWith([400, false, false])]
     public function test_http_errors_are_classified(int $status, bool $transient, bool $authorization): void
     {
-        $this->autopay->failNextRequest($status, 'SOMETHING');
+        $client = new AutopayClient(new MockHttpClient(new MockResponse('ERROR', ['http_code' => $status])), new SignatureVerifier());
 
         try {
-            $this->client->retrieveTransaction(Credentials::fake(), 'ORDER-1');
+            $client->retrieveTransaction(Credentials::fake(), 'ORDER-1');
             self::fail('Expected an exception.');
         } catch (AutopayApiException $exception) {
             self::assertSame($status, $exception->getHttpStatusCode());
             self::assertSame($transient, $exception->isTransient());
             self::assertSame($authorization, $exception->isAuthorizationError());
+        }
+    }
+
+    public function test_error_name_decides_over_the_http_status(): void
+    {
+        $body = '<transaction><reason>LIMIT_REQUESTED_TRANSACTIONS_WITH_THE_SAME_ORDER_ID_AND_SERVICE_ID_EXCEEDED</reason><description>limit</description></transaction>';
+        $client = new AutopayClient(new MockHttpClient(new MockResponse($body, ['http_code' => 403])), new SignatureVerifier());
+
+        try {
+            $client->retrieveTransaction(Credentials::fake(), 'ORDER-1');
+            self::fail('Expected an exception.');
+        } catch (AutopayApiException $exception) {
+            self::assertSame('LIMIT_REQUESTED_TRANSACTIONS_WITH_THE_SAME_ORDER_ID_AND_SERVICE_ID_EXCEEDED', $exception->getErrorName());
+            self::assertFalse($exception->isAuthorizationError());
+            self::assertFalse($exception->isTransient());
+        }
+    }
+
+    public function test_refused_transaction_start_is_an_api_exception_with_the_reason(): void
+    {
+        $body = '<transaction><orderID>ORDER-1</orderID><confirmation>NOTCONFIRMED</confirmation><reason>INVALID_HASH</reason></transaction>';
+        $client = new AutopayClient(new MockHttpClient(new MockResponse($body)), new SignatureVerifier());
+
+        try {
+            $client->startTransaction(Credentials::fake(), self::transaction('ORDER-1'));
+            self::fail('Expected an exception.');
+        } catch (AutopayApiException $exception) {
+            self::assertSame('INVALID_HASH', $exception->getErrorName());
+            self::assertTrue($exception->isAuthorizationError());
         }
     }
 
@@ -176,7 +206,7 @@ final class AutopayClientTest extends TestCase
 
     public function test_transactions_of_other_order_ids_are_ignored(): void
     {
-        $xml = FakeAutopay::transactionListXml(FakeAutopay::SERVICE_ID, [['orderID' => 'OTHER', 'remoteID' => 'R', 'amount' => '15.00', 'currency' => 'PLN', 'paymentStatus' => 'SUCCESS']], null);
+        $xml = FakeAutopay::signedTransactionList([['orderID' => 'OTHER', 'remoteID' => 'R', 'amount' => '15.00', 'currency' => 'PLN', 'paymentStatus' => 'SUCCESS']]);
         $client = new AutopayClient(new MockHttpClient(new MockResponse($xml)), new SignatureVerifier());
 
         try {
@@ -188,9 +218,83 @@ final class AutopayClientTest extends TestCase
         }
     }
 
+    public function test_transaction_state_with_a_wrong_hash_is_rejected(): void
+    {
+        $attempt = ['orderID' => 'ORDER-1', 'remoteID' => 'R', 'amount' => '15.00', 'currency' => 'PLN', 'paymentStatus' => 'SUCCESS'];
+        $client = new AutopayClient(new MockHttpClient([
+            new MockResponse(FakeAutopay::transactionListXml(FakeAutopay::SERVICE_ID, [$attempt], null)),
+            new MockResponse(FakeAutopay::transactionListXml(FakeAutopay::SERVICE_ID, [$attempt], FakeAutopay::sign(FakeAutopay::SERVICE_ID, 'ORDER-1', 'R', '15.00', 'PLN', 'PENDING'))),
+        ]), new SignatureVerifier());
+
+        foreach ([1, 2] as $attemptNumber) {
+            try {
+                $client->retrieveTransaction(Credentials::fake(), 'ORDER-1');
+                self::fail('Expected an exception for response ' . $attemptNumber . '.');
+            } catch (AutopayApiException $exception) {
+                self::assertTrue($exception->isTransient());
+            }
+        }
+    }
+
+    public function test_order_id_paid_twice_reports_every_paid_attempt(): void
+    {
+        $started = $this->client->startTransaction(Credentials::fake(), self::transaction('ORDER-1'));
+        $this->autopay->setStatus('ORDER-1', 'SUCCESS');
+        $second = $this->autopay->addAttempt('ORDER-1', 'SUCCESS');
+
+        $transaction = $this->client->retrieveTransaction(Credentials::fake(), 'ORDER-1');
+
+        self::assertSame('SUCCESS', $transaction->status);
+        self::assertSame($started->remoteId, $transaction->remoteId);
+        self::assertSame([$started->remoteId, $second], $transaction->paidRemoteIds);
+    }
+
+    public function test_it_cancels_the_pending_attempts_of_an_order_id(): void
+    {
+        $this->client->startTransaction(Credentials::fake(), self::transaction('ORDER-1'));
+        $messageId = str_repeat('d', 32);
+
+        $result = $this->client->cancelTransaction(Credentials::fake(), 'ORDER-1', $messageId);
+
+        self::assertEquals(new TransactionCancelled(true, TransactionCancelled::CANCELED_FULLY), $result);
+        self::assertSame('FAILURE', $this->autopay->transaction('ORDER-1')['attempts'][0]['paymentStatus']);
+        parse_str($this->autopay->requests('POST', '#transactionCancel$#')[0]['body'], $sent);
+        self::assertSame(['ServiceID' => FakeAutopay::SERVICE_ID, 'MessageID' => $messageId, 'OrderID' => 'ORDER-1', 'Hash' => FakeAutopay::sign(FakeAutopay::SERVICE_ID, $messageId, 'ORDER-1')], $sent);
+
+        self::assertEquals(new TransactionCancelled(false, TransactionCancelled::INCORRECT_PAYMENT_STATUS), $this->client->cancelTransaction(Credentials::fake(), 'ORDER-1', str_repeat('e', 32)));
+        self::assertEquals(new TransactionCancelled(false, TransactionCancelled::TRANSACTION_NOT_FOUND), $this->client->cancelTransaction(Credentials::fake(), 'ORDER-2', str_repeat('f', 32)));
+    }
+
+    public function test_confirmed_cancellation_with_a_wrong_hash_is_rejected(): void
+    {
+        $body = '<transaction><serviceID>100001</serviceID><messageID>' . str_repeat('d', 32) . '</messageID><confirmation>CONFIRMED</confirmation><reason>CANCELED_FULLY</reason><hash>' . str_repeat('0', 64) . '</hash></transaction>';
+        $client = new AutopayClient(new MockHttpClient(new MockResponse($body)), new SignatureVerifier());
+
+        $this->expectException(AutopayApiException::class);
+
+        $client->cancelTransaction(Credentials::fake(), 'ORDER-1', str_repeat('d', 32));
+    }
+
+    public function test_refund_status_with_a_wrong_hash_or_an_error_is_rejected(): void
+    {
+        $client = new AutopayClient(new MockHttpClient([
+            new MockResponse((string) json_encode(['serviceId' => 100001, 'messageId' => str_repeat('a', 32), 'status' => 'DONE', 'remoteOutId' => 'X', 'hash' => str_repeat('0', 64)])),
+            new MockResponse((string) json_encode(['serviceId' => 100001, 'messageId' => str_repeat('a', 32), 'status' => null, 'errorStatus' => 'NOT_FOUND'])),
+        ]), new SignatureVerifier());
+
+        foreach ([1, 2] as $attemptNumber) {
+            try {
+                $client->retrieveRefundStatus(Credentials::fake(), str_repeat('a', 32));
+                self::fail('Expected an exception for response ' . $attemptNumber . '.');
+            } catch (AutopayApiException $exception) {
+                self::assertNotSame('', $exception->getMessage());
+            }
+        }
+    }
+
     public function test_incomplete_transaction_state_is_rejected(): void
     {
-        $xml = FakeAutopay::transactionListXml(FakeAutopay::SERVICE_ID, [['orderID' => 'ORDER-1', 'remoteID' => 'R', 'amount' => 'abc', 'currency' => 'PLN', 'paymentStatus' => 'SUCCESS']], null);
+        $xml = FakeAutopay::signedTransactionList([['orderID' => 'ORDER-1', 'remoteID' => 'R', 'amount' => 'abc', 'currency' => 'PLN', 'paymentStatus' => 'SUCCESS']]);
         $client = new AutopayClient(new MockHttpClient(new MockResponse($xml)), new SignatureVerifier());
 
         $this->expectException(AutopayApiException::class);

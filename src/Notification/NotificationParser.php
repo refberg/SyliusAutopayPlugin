@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Refberg\SyliusAutopayPlugin\Notification;
 
+use Refberg\SyliusAutopayPlugin\Api\Amount;
 use Refberg\SyliusAutopayPlugin\Api\Xml;
 use Refberg\SyliusAutopayPlugin\Config\AutopayCredentials;
 use Refberg\SyliusAutopayPlugin\Signature\SignatureVerifierInterface;
@@ -15,10 +16,10 @@ use function is_string;
 use function parse_str;
 
 /**
- * Reads an Autopay ITN: POST field "transactions" with a base64-encoded <transactionList> document.
+ * Reads an Autopay ITN or ISTN: POST field "transactions" with a base64-encoded <transactionList> document.
  *
  * The document hash covers the values of all its elements in document order (except the hash itself)
- * followed by the shared key. Only ITNs with exactly one transaction are accepted.
+ * followed by the shared key. Only messages with exactly one transaction are accepted.
  */
 final readonly class NotificationParser implements NotificationParserInterface
 {
@@ -49,8 +50,17 @@ final readonly class NotificationParser implements NotificationParserInterface
         }
 
         $transaction = $transactions[0];
-        $orderId = null !== $transaction ? Xml::text($transaction, 'orderID') : null;
-        if (null === $transaction || null === $orderId) {
+        if (null === $transaction) {
+            return null;
+        }
+
+        $transferStatus = Xml::text($transaction, 'transferStatus');
+        if (null !== $transferStatus) {
+            return self::transfer($serviceId, $transaction, $transferStatus);
+        }
+
+        $orderId = Xml::text($transaction, 'orderID');
+        if (null === $orderId) {
             return null;
         }
 
@@ -72,5 +82,28 @@ final readonly class NotificationParser implements NotificationParserInterface
         $content = is_array($httpRequest) ? ($httpRequest['content'] ?? null) : null;
 
         return is_string($content) ? $this->parse($content, $credentials) : null;
+    }
+
+    /**
+     * ISTN: the confirmation refers to remoteOutID, so it is required.
+     */
+    private static function transfer(string $serviceId, SimpleXMLElement $transaction, string $transferStatus): ?Notification
+    {
+        $remoteOutId = Xml::text($transaction, 'remoteOutID');
+        if (null === $remoteOutId) {
+            return null;
+        }
+
+        return new Notification(
+            type: 'true' === Xml::text($transaction, 'isRefund') ? Notification::TYPE_REFUND : Notification::TYPE_SETTLEMENT,
+            serviceId: $serviceId,
+            orderId: Xml::text($transaction, 'orderID'),
+            remoteId: Xml::text($transaction, 'remoteID'),
+            status: $transferStatus,
+            refundId: Xml::text($transaction, 'orderOutID'),
+            remoteOutId: $remoteOutId,
+            amount: Amount::parse(Xml::text($transaction, 'amount')),
+            currency: Xml::text($transaction, 'currency'),
+        );
     }
 }

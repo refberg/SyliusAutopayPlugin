@@ -20,6 +20,7 @@ use function is_array;
 use function is_string;
 use function mb_substr;
 use function parse_url;
+use function preg_replace;
 use function sprintf;
 use const FILTER_VALIDATE_EMAIL;
 use const FILTER_VALIDATE_URL;
@@ -62,7 +63,8 @@ final readonly class TransactionRequestFactory implements TransactionRequestFact
         return array_filter([
             'OrderID' => $extOrderId,
             'Amount' => Amount::format($amount),
-            'Description' => mb_substr(sprintf('Order %s', (string) $order->getNumber()), 0, self::DESCRIPTION_LENGTH),
+            // Autopay accepts only Latin letters, digits and ". : - ," in the description.
+            'Description' => mb_substr(sprintf('Order %s', preg_replace('/[^A-Za-z0-9.:\-, ]/', '', (string) $order->getNumber()) ?? ''), 0, self::DESCRIPTION_LENGTH),
             'Currency' => $currency,
             'CustomerEmail' => null !== $email && false !== filter_var($email, FILTER_VALIDATE_EMAIL) ? $email : '',
             'ValidityTime' => $this->validityTime(),

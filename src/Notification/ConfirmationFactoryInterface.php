@@ -13,7 +13,7 @@ interface ConfirmationFactoryInterface
     public const NOT_CONFIRMED = 'NOTCONFIRMED';
 
     /**
-     * Signed <confirmationList> document Autopay expects in the ITN response.
+     * Signed <confirmationList> document Autopay expects in the ITN and ISTN response.
      */
     public function create(Notification $notification, AutopayCredentials $credentials, bool $confirmed): string;
 }

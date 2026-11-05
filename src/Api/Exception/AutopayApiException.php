@@ -12,8 +12,8 @@ use function in_array;
 final class AutopayApiException extends AutopayException
 {
     /**
-     * Error names meaning that Autopay rejected the request signature, i.e. the shared key or hash algorithm
-     * in the plugin configuration (assumption A2 in docs/autopay.md).
+     * Error names meaning that Autopay rejected the request signature or the service, i.e. the shared key,
+     * hash algorithm or service ID in the plugin configuration (assumption A1 in docs/autopay.md).
      */
     public const AUTHORIZATION_ERRORS = ['INVALID_HASH', 'WRONG_HASH', 'INVALID_SERVICE_ID'];
 
@@ -45,6 +45,10 @@ final class AutopayApiException extends AutopayException
      */
     public function isAuthorizationError(): bool
     {
-        return in_array($this->httpStatusCode, [401, 403], true) || in_array($this->errorName, self::AUTHORIZATION_ERRORS, true);
+        if (null !== $this->errorName) {
+            return in_array($this->errorName, self::AUTHORIZATION_ERRORS, true);
+        }
+
+        return in_array($this->httpStatusCode, [401, 403], true);
     }
 }
