@@ -184,6 +184,9 @@ return static function (ContainerConfigurator $container): void {
             ->tag('messenger.message_handler', ['bus' => 'sylius.payment_request.command_bus'])
             ->tag('monolog.logger', ['channel' => 'autopay']);
     }
+    foreach ([StatusPaymentRequestHandler::class, NotifyPaymentRequestHandler::class] as $handler) {
+        $services->get($handler)->arg('$paymentRequestRepository', service('sylius.repository.payment_request'));
+    }
 
     // Notifications (ITN and ISTN)
     $services->set(AutopayNotifyPaymentProvider::class)

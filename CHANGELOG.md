@@ -35,8 +35,20 @@ deprecations are added in 1.x releases, and deprecated code is removed in 2.0.
 
 ### Changed
 
+- A transaction paid after the Sylius payment was already completed by another transaction, failed or cancelled, and
+  a transaction paid more than once, are logged as `critical` instead of `error`. The warning names in the payment
+  details are unchanged.
+
 ### Deprecated
 
 ### Fixed
+
+- The capture payment request is completed when the ITN or the status check finds its transaction `SUCCESS` (the status
+  check also completes capture requests left processing for transactions that were already paid). After a `FAILURE`
+  it stays processing, so **Pay** reuses the same `OrderID`, which can still be paid, and no second transaction is
+  started.
+- After a transaction pays the payment, the plugin also asks Autopay to cancel its `FAILURE` transactions: an attempt
+  that the customer started again there and that waits for the payment is cancelled. If such a transaction is paid
+  anyway, the payment gets the `duplicate_payment` warning.
 
 ### Removed

@@ -13,6 +13,7 @@ use Sylius\Component\Core\Model\Payment;
 use Sylius\Component\Payment\PaymentTransitions;
 use Tests\Refberg\SyliusAutopayPlugin\Support\MemoryLogger;
 use Tests\Refberg\SyliusAutopayPlugin\Support\PaymentStateMachine;
+use function array_column;
 
 final class PaymentStateApplierTest extends TestCase
 {
@@ -117,7 +118,7 @@ final class PaymentStateApplierTest extends TestCase
         self::assertSame('O1', $details->getCompletedOrderId());
         self::assertSame([['type' => PaymentDetails::WARNING_DUPLICATE_PAYMENT, 'order_id' => 'O2']], $details->warnings());
         self::assertSame([PaymentTransitions::TRANSITION_COMPLETE], $this->stateMachine->appliedTransitions(PaymentTransitions::GRAPH));
-        self::assertSame('error', $this->logger->records[1]['level'] ?? null);
+        self::assertSame('critical', $this->logger->records[1]['level'] ?? null);
     }
 
     #[TestWith(['failed'])]
@@ -131,6 +132,27 @@ final class PaymentStateApplierTest extends TestCase
         self::assertSame($state, $payment->getState());
         self::assertNull(PaymentDetails::of($payment)->getCompletedOrderId());
         self::assertSame([['type' => PaymentDetails::WARNING_LATE_PAYMENT, 'order_id' => 'O1']], PaymentDetails::of($payment)->warnings());
+        self::assertSame('critical', $this->logger->records[0]['level'] ?? null);
+    }
+
+    public function test_order_id_paid_more_than_once_is_a_critical_warning(): void
+    {
+        $payment = self::payment(['O1']);
+
+        self::assertSame(PaymentStateApplier::RESULT_COMPLETED, $this->applier->apply($payment, self::transaction('O1', 'SUCCESS', 'R2', ['R1', 'R2'])));
+        self::assertSame('completed', $payment->getState());
+        self::assertSame([['type' => PaymentDetails::WARNING_DUPLICATE_PAYMENT, 'order_id' => 'O1']], PaymentDetails::of($payment)->warnings());
+        self::assertSame('critical', $this->logger->records[0]['level'] ?? null);
+        self::assertSame(['R1', 'R2'], $this->logger->records[0]['context']['remote_ids'] ?? null);
+    }
+
+    public function test_order_id_paid_once_is_not_a_duplicate(): void
+    {
+        $payment = self::payment(['O1']);
+
+        self::assertSame(PaymentStateApplier::RESULT_COMPLETED, $this->applier->apply($payment, self::transaction('O1', 'SUCCESS', 'R1', ['R1'])));
+        self::assertSame([], PaymentDetails::of($payment)->warnings());
+        self::assertSame(['info'], array_column($this->logger->records, 'level'));
     }
 
     /**
@@ -151,8 +173,11 @@ final class PaymentStateApplierTest extends TestCase
         return $payment;
     }
 
-    private static function transaction(string $orderId, string $status, ?string $remoteId = null): AutopayTransaction
+    /**
+     * @param list<string> $paidRemoteIds
+     */
+    private static function transaction(string $orderId, string $status, ?string $remoteId = null, array $paidRemoteIds = []): AutopayTransaction
     {
-        return new AutopayTransaction($orderId, $remoteId, $status, 1500, 'PLN', '100001');
+        return new AutopayTransaction($orderId, $remoteId, $status, 1500, 'PLN', '100001', $paidRemoteIds);
     }
 }

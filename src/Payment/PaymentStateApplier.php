@@ -38,7 +38,7 @@ final readonly class PaymentStateApplier implements PaymentStateApplierInterface
 
         if (count($transaction->paidRemoteIds) > 1) {
             $details->addWarning(PaymentDetails::WARNING_DUPLICATE_PAYMENT, $transaction->orderId);
-            $this->logger->error('Autopay transaction was paid more than once. Manual refund may be needed.', [
+            $this->logger->critical('Autopay transaction was paid more than once. Manual refund may be needed.', [
                 'payment_id' => $payment->getId(),
                 'order_id' => $transaction->orderId,
                 'remote_ids' => $transaction->paidRemoteIds,
@@ -74,7 +74,7 @@ final readonly class PaymentStateApplier implements PaymentStateApplierInterface
         $warning = null !== $completedOrderId ? PaymentDetails::WARNING_DUPLICATE_PAYMENT : PaymentDetails::WARNING_LATE_PAYMENT;
         $details->addWarning($warning, $transaction->orderId);
 
-        $this->logger->error('Autopay transaction was paid, but the Sylius payment cannot be completed. Manual refund may be needed.', [
+        $this->logger->critical('Autopay transaction was paid, but the Sylius payment cannot be completed. Manual refund may be needed.', [
             'payment_id' => $payment->getId(),
             'payment_state' => $payment->getState(),
             'order_id' => $transaction->orderId,

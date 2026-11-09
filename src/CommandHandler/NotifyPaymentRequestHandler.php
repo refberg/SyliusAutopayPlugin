@@ -21,7 +21,9 @@ use Refberg\SyliusAutopayPlugin\Payment\TransactionCancellerInterface;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Bundle\PaymentBundle\Provider\PaymentRequestProviderInterface;
 use Sylius\Component\Core\Model\PaymentInterface;
+use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use Sylius\Component\Payment\PaymentTransitions;
+use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
 
 /**
  * Handles an Autopay ITN (or ISTN about a refund) stored by Sylius' notify endpoint.
@@ -39,6 +41,9 @@ final readonly class NotifyPaymentRequestHandler
 {
     use PaymentRequestHandlerTrait;
 
+    /**
+     * @param PaymentRequestRepositoryInterface<PaymentRequestInterface>|null $paymentRequestRepository
+     */
     public function __construct(
         private PaymentRequestProviderInterface $paymentRequestProvider,
         private CredentialsResolverInterface $credentialsResolver,
@@ -48,6 +53,7 @@ final readonly class NotifyPaymentRequestHandler
         private PaymentLockerInterface $paymentLocker,
         private StateMachineInterface $stateMachine,
         private LoggerInterface $logger = new NullLogger(),
+        private ?PaymentRequestRepositoryInterface $paymentRequestRepository = null,
     ) {
     }
 
@@ -104,6 +110,7 @@ final readonly class NotifyPaymentRequestHandler
         if (PaymentStateApplierInterface::RESULT_COMPLETED === $result) {
             $this->onPaymentCompleted($this->canceller, $paymentRequest, $payment, $credentials, $orderId);
         }
+        $this->closeCaptureRequests($this->paymentRequestRepository, $payment, $orderId);
 
         $this->completeRequest($paymentRequest, [
             'type' => $notification->type,

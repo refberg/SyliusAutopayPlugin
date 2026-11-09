@@ -166,10 +166,13 @@ Przykład w kodzie znajdziesz w [README.md](README.md#creating-the-payment-metho
 2. Po płatności klient wraca do sklepu (`/order/after-pay/{hash}`). Plugin odczytuje status transakcji z API Autopay;
    parametry adresu powrotu są ignorowane. Dopóki Autopay przetwarza płatność, klient widzi stronę podziękowania,
    a płatność pozostaje nieopłacona.
-3. Autopay wysyła ITN na `/payment-methods/{code}`. Płatność jest kończona albo oznaczana jako nieudana na podstawie
-   stanu odczytanego z API Autopay.
+3. Autopay wysyła ITN na `/payment-methods/{code}`. Płatność jest kończona, gdy API Autopay potwierdzi `SUCCESS`;
+   po `FAILURE` pozostaje nieopłacona.
 
-Ponowne otwarcie strony płatności używa trwającej transakcji zamiast rozpoczynać nową.
+Ponowne otwarcie strony płatności używa trwającej transakcji zamiast rozpoczynać nową. Gdy ITN albo sprawdzenie
+statusu zastanie transakcję w stanie `SUCCESS`, jej żądanie płatności capture jest kończone. Po `FAILURE` żądanie
+capture pozostaje w toku, więc **Zapłać** odsyła klienta do tego samego `OrderID`, który nadal można opłacić, zamiast
+rozpoczynać drugą transakcję.
 
 ### API
 
@@ -205,12 +208,15 @@ zamówienia anuluje Sylius (`sylius:cancel-unpaid-orders`), co anuluje też tran
 jedną próbę tego samego `OrderID`, płatność jest kończona raz i dostaje ostrzeżenie `duplicate_payment`.
 
 Gdy transakcja opłaci płatność, pozostałe transakcje tej płatności, które można jeszcze opłacić (druga karta, drugie
-kliknięcie **Zapłać**), są anulowane w Autopay. Gdy Autopay odmówi rozpoczęcia transakcji albo jest niedostępny, sklep
-pokazuje komunikat o błędzie i klient może spróbować ponownie.
+kliknięcie **Zapłać**), są anulowane w Autopay. Plugin prosi Autopay o anulowanie także transakcji z `FAILURE`:
+próba, którą klient zaczął tam ponownie i która czeka na płatność, zostaje anulowana. Jeśli taka transakcja i tak
+zostanie opłacona, płatność dostaje ostrzeżenie `duplicate_payment`. Gdy Autopay odmówi rozpoczęcia transakcji albo
+jest niedostępny, sklep pokazuje komunikat o błędzie i klient może spróbować ponownie.
 
 Opłacona płatność nigdy nie wraca do wcześniejszego stanu. Gdy opłacona zostanie druga transakcja tej samej płatności,
 zamówienie nie jest opłacane drugi raz: plugin zapisuje ostrzeżenie `duplicate_payment` w szczegółach płatności
-(`refberg_autopay.warnings`) i loguje błąd na kanale `autopay`. Taką transakcję zwróć ręcznie w panelu Autopay.
+(`refberg_autopay.warnings`) i loguje błąd krytyczny (`critical`) na kanale `autopay`. Taką transakcję zwróć ręcznie
+w panelu Autopay.
 
 Gdy klient po przekierowaniu do Autopay zmieni metodę płatności, transakcja rozpoczęta wcześniej pozostaje powiązana
 z płatnością. Jej ITN albo powrót klienta z Autopay kończy płatność, gdy API Autopay potwierdzi wpłatę; plugin przywraca

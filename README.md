@@ -197,10 +197,13 @@ $paymentMethodRepository->add($paymentMethod);
 2. After the payment the customer returns to the shop (`/order/after-pay/{hash}`). The plugin reads the transaction
    status from the Autopay API; the parameters of the return URL are ignored. While Autopay is still processing
    the payment, the customer sees the thank-you page and the payment stays unpaid.
-3. Autopay sends an ITN to `/payment-methods/{code}`. The payment is completed or failed based on the state read
-   from the Autopay API.
+3. Autopay sends an ITN to `/payment-methods/{code}`. The payment is completed when the Autopay API confirms
+   `SUCCESS`; after a `FAILURE` it stays unpaid.
 
-Opening the pay page again reuses the transaction in progress instead of starting a new one.
+Opening the pay page again reuses the transaction in progress instead of starting a new one. Once the ITN or the
+status check finds the transaction `SUCCESS`, its capture payment request is completed. After a `FAILURE` the capture
+payment request stays processing, so **Pay** sends the customer back to the same `OrderID`, which can still be paid,
+instead of starting a second transaction.
 
 ### API
 
@@ -252,15 +255,17 @@ transactions too. When more than one attempt of the same `OrderID` was paid, the
 `duplicate_payment` warning.
 
 Once a transaction completes the payment, the other transactions of that payment that may still be paid (another
-tab, a second click on **Pay**) are cancelled at Autopay.
+tab, a second click on **Pay**) are cancelled at Autopay. The plugin also asks Autopay to cancel the `FAILURE`
+transactions: an attempt that the customer started again there and that waits for the payment is cancelled. If such a
+transaction is paid anyway, the payment gets the `duplicate_payment` warning.
 
 If Autopay refuses to start a transaction or cannot be reached, the shop shows an error message and the customer can
 try again.
 
 A completed payment never goes back to an earlier state. If a second transaction of the same payment is paid (for
 example after the customer retried in another tab), the Sylius order is not paid twice: the plugin records the
-`duplicate_payment` warning in the payment details (`refberg_autopay.warnings`) and logs an error on the `autopay`
-channel. Refund that transaction manually in the Autopay panel.
+`duplicate_payment` warning in the payment details (`refberg_autopay.warnings`) and logs a critical error on the
+`autopay` channel. Refund that transaction manually in the Autopay panel.
 
 If the customer switches the order to another payment method after the redirect to Autopay, the transaction started
 before the switch stays linked to the payment. Its ITN, or the customer's return from Autopay, completes the payment
