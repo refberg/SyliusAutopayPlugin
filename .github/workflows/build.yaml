@@ -227,6 +227,7 @@ jobs:
 
             -
                 name: Download coverage
+                continue-on-error: true
                 uses: actions/download-artifact@v8
                 with:
                     name: coverage
