@@ -31,7 +31,7 @@
         "text": "var/infection.log",
         "github": true
     },
-    // Measured MSI is 87.4% (covered code: 87.4%); the thresholds keep it from dropping.
-    "minMsi": 85,
-    "minCoveredMsi": 85
+    // Measured MSI is 89.4% (covered code: 89.4%); the thresholds keep it from dropping.
+    "minMsi": 87,
+    "minCoveredMsi": 87
 }
