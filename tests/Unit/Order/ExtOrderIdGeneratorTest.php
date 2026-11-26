@@ -10,8 +10,10 @@ use PHPUnit\Framework\TestCase;
 use Refberg\SyliusAutopayPlugin\Order\ExtOrderIdGenerator;
 use Sylius\Component\Core\Model\Order;
 use Sylius\Component\Core\Model\Payment;
+use Sylius\Component\Core\Model\PaymentInterface;
 use Sylius\Component\Core\Model\PaymentMethod;
 use Sylius\Component\Payment\Model\PaymentRequest;
+use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use function strlen;
 
 final class ExtOrderIdGeneratorTest extends TestCase
@@ -61,6 +63,21 @@ final class ExtOrderIdGeneratorTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
 
         (new ExtOrderIdGenerator())->generate(new Payment(), self::paymentRequest('3f2504e0-4f89-11d3-9a0c-0305e82c3301'));
+    }
+
+    public function test_it_requires_persisted_entities(): void
+    {
+        $order = new Order();
+        $order->setNumber('1');
+        $payment = self::createStub(PaymentInterface::class);
+        $payment->method('getId')->willReturn(null);
+        $payment->method('getOrder')->willReturn($order);
+        $paymentRequest = self::createStub(PaymentRequestInterface::class);
+        $paymentRequest->method('getId')->willReturn(null);
+
+        $this->expectException(InvalidArgumentException::class);
+
+        (new ExtOrderIdGenerator())->generate($payment, $paymentRequest);
     }
 
     private static function payment(int $id, string $number): Payment

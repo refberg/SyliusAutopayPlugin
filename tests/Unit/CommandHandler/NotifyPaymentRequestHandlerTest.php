@@ -180,6 +180,33 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
         $handler(new NotifyPaymentRequest(HandlerFixtures::HASH));
     }
 
+    public function test_failed_cancellation_does_not_stop_the_next_one_and_other_services_are_skipped(): void
+    {
+        $cancelled = [];
+        $canceller = self::createStub(TransactionCancellerInterface::class);
+        $canceller->method('cancel')->willReturnCallback(static function (PaymentInterface $payment, string $orderId) use (&$cancelled): string {
+            $cancelled[] = $orderId;
+            if ('O3' === $orderId) {
+                throw new AutopayApiException('Autopay is down.', 503);
+            }
+
+            return TransactionCancellerInterface::RESULT_CANCELLED;
+        });
+        $logger = new MemoryLogger();
+        [$handler, , $payment] = $this->handler(self::completingSynchronizer(), FakeAutopay::itn(['orderID' => 'O1', 'paymentStatus' => 'SUCCESS']), canceller: $canceller, logger: $logger);
+        $details = PaymentDetails::of($payment);
+        $details->addOrder('O2', '200002', 'R2', 1500, 'PLN');
+        $details->addOrder('O3', FakeAutopay::SERVICE_ID, 'R3', 1500, 'PLN');
+        $details->addOrder('O4', FakeAutopay::SERVICE_ID, 'R4', 1500, 'PLN');
+        $details->save();
+
+        $handler(new NotifyPaymentRequest(HandlerFixtures::HASH));
+
+        self::assertSame(['O4', 'O3'], $cancelled);
+        self::assertSame(['warning'], array_column($logger->records, 'level'));
+        self::assertSame('Autopay is down.', $logger->records[0]['context']['reason'] ?? null);
+    }
+
     /**
      * @param list<string> $expectedLevels
      */

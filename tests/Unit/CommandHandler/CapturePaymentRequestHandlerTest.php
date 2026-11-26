@@ -59,6 +59,19 @@ final class CapturePaymentRequestHandlerTest extends TestCase
         self::assertSame(['error' => 'Payment in state "completed" cannot be paid.'], $paymentRequest->getResponseData());
     }
 
+    public function test_payment_in_a_currency_of_another_service_gets_no_transaction(): void
+    {
+        [$handler, $autopay, $paymentRequest, $payment] = $this->handler(static function (): void {
+        });
+        $payment->setCurrencyCode('EUR');
+
+        $handler(new CapturePaymentRequest(HandlerFixtures::HASH));
+
+        self::assertSame([], $autopay->requests('POST', '#^/payment$#'));
+        self::assertSame(PaymentRequestInterface::STATE_FAILED, $paymentRequest->getState());
+        self::assertSame(['error' => 'The Autopay service accepts only PLN, not EUR.'], $paymentRequest->getResponseData());
+    }
+
     public function test_request_that_is_already_processing_is_left_alone(): void
     {
         [$handler, $autopay, $paymentRequest] = $this->handler(static function (): void {

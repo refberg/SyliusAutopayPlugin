@@ -37,7 +37,9 @@ jobs:
                     php-version: "8.3"
                     extensions: intl, sodium, pdo_mysql
                     coverage: none
-                    tools: composer:v2, composer-normalize
+                    tools: composer:v2, composer-normalize:2.59.0@sha256:8298b420af16d663cd544dad58b97a71b71dd62424a2735ccae7f8cc940f5030
+                env:
+                    fail-fast: true
 
             -
                 name: Validate composer.json
@@ -200,7 +202,9 @@ jobs:
                     php-version: "8.3"
                     extensions: intl, sodium
                     coverage: pcov
-                    tools: composer:v2, infection
+                    tools: composer:v2, infection:0.35.12@sha256:b7e9a28e23daf8178c80bb768bc3fd12047e92ef16ea5724af432314a4c01964
+                env:
+                    fail-fast: true
 
             -
                 name: Install dependencies

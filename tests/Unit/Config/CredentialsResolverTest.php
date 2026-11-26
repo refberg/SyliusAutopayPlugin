@@ -66,6 +66,7 @@ final class CredentialsResolverTest extends TestCase
         yield 'unknown environment' => [['environment' => 'staging'] + self::CONFIG];
         yield 'no service id' => [['service_id' => ''] + self::CONFIG];
         yield 'non-numeric service id' => [['service_id' => '12a'] + self::CONFIG];
+        yield 'service id not starting with a digit' => [['service_id' => 'abc123'] + self::CONFIG];
         yield 'no shared key' => [['shared_key' => '  '] + self::CONFIG];
         yield 'array shared key' => [['shared_key' => ['x']] + self::CONFIG];
         yield 'md5' => [['hash_algorithm' => 'md5'] + self::CONFIG];
