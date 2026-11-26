@@ -47,6 +47,20 @@ final class RefundPaymentRequestHandlerTest extends TestCase
         self::assertSame(['error' => 'No completed Autopay transaction for this payment.'], $paymentRequest->getResponseData());
     }
 
+    public function test_completed_order_id_without_a_remote_id_fails_without_calling_the_api(): void
+    {
+        [$handler, $autopay, $paymentRequest, $payment] = $this->handler();
+        $details = PaymentDetails::of($payment);
+        $details->setCompletedOrderId('O1');
+        $details->save();
+
+        $handler(new RefundPaymentRequest(HandlerFixtures::HASH));
+
+        self::assertSame([], $autopay->requests());
+        self::assertSame(PaymentRequestInterface::STATE_FAILED, $paymentRequest->getState());
+        self::assertSame(['error' => 'No completed Autopay transaction for this payment.'], $paymentRequest->getResponseData());
+    }
+
     public function test_active_refund_is_not_requested_again(): void
     {
         $paymentLocker = self::createMock(PaymentLockerInterface::class);

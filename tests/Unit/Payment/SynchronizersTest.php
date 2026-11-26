@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Refberg\SyliusAutopayPlugin\Unit\Payment;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 use Refberg\SyliusAutopayPlugin\Api\AutopayClient;
@@ -29,6 +30,7 @@ use Tests\Refberg\SyliusAutopayPlugin\Support\PaymentStateMachine;
 use function array_column;
 use function array_keys;
 use function array_slice;
+use function sprintf;
 use function str_repeat;
 
 final class SynchronizersTest extends TestCase
@@ -193,6 +195,27 @@ final class SynchronizersTest extends TestCase
             self::assertSame(200, $exception->getHttpStatusCode());
             self::assertSame('Autopay did not cancel transaction O1 (MULTIPLY_CANCEL).', $exception->getMessage());
         }
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function unexpectedCancellationAnswers(): iterable
+    {
+        $messageId = str_repeat('d', 32);
+        yield 'confirmed with an unknown reason' => [sprintf('<transaction><serviceID>%s</serviceID><messageID>%s</messageID><confirmation>CONFIRMED</confirmation><reason>OTHER</reason><hash>%s</hash></transaction>', FakeAutopay::SERVICE_ID, $messageId, FakeAutopay::sign(FakeAutopay::SERVICE_ID, $messageId, 'CONFIRMED', 'OTHER'))];
+        yield 'confirmed without a reason' => [sprintf('<transaction><serviceID>%s</serviceID><messageID>%s</messageID><confirmation>CONFIRMED</confirmation><hash>%s</hash></transaction>', FakeAutopay::SERVICE_ID, $messageId, FakeAutopay::sign(FakeAutopay::SERVICE_ID, $messageId, 'CONFIRMED'))];
+        yield 'not confirmed partial cancellation' => ['<transaction><confirmation>NOTCONFIRMED</confirmation><reason>CANCELED_PARTIALLY</reason></transaction>'];
+    }
+
+    #[DataProvider('unexpectedCancellationAnswers')]
+    public function test_unexpected_cancellation_answer_is_an_api_exception(string $body): void
+    {
+        $client = new AutopayClient(new MockHttpClient(new MockResponse($body)), new SignatureVerifier());
+
+        $this->expectException(AutopayApiException::class);
+
+        (new TransactionCanceller($client))->cancel(new Payment(), 'O1', str_repeat('d', 32), Credentials::fake());
     }
 
     private function paymentSynchronizer(): PaymentSynchronizer
