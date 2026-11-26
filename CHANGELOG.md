@@ -7,7 +7,7 @@ deprecations are added in 1.x releases, and deprecated code is removed in 2.0.
 
 ### Added
 
-- Autopay (Blue Media) online payments gateway (`refberg_autopay`) for Sylius 2.2.12+ and 2.3.2+, built on Sylius
+- Autopay (Blue Media) online payments gateway (`refberg_autopay`) for Sylius 2.2.13+ and 2.3.3+, built on Sylius
   Payment Requests, without Payum.
 - Shop and API checkout with the transaction started in the background and a redirect to the Autopay page.
 - Status check after the customer returns, based on the Autopay transaction status API.
@@ -35,8 +35,23 @@ deprecations are added in 1.x releases, and deprecated code is removed in 2.0.
 
 ### Changed
 
+- Requires `sylius/sylius` 2.2.13+ or 2.3.3+, the first versions with the fixes for the Sylius security advisories
+  GHSA-qf53-r587-295p, GHSA-vhpc-rcxq-vfgr and GHSA-fpgw-g9hj-m43q of 2026-11-18 (Composer refuses to install the
+  vulnerable versions).
+- A transaction paid after the Sylius payment was already completed by another transaction, failed or cancelled, and
+  a transaction paid more than once, are logged as `critical` instead of `error`. The warning names in the payment
+  details are unchanged.
+
 ### Deprecated
 
 ### Fixed
+
+- The capture payment request is completed when the ITN or the status check finds its transaction `SUCCESS` (the status
+  check also completes capture requests left processing for transactions that were already paid). After a `FAILURE`
+  it stays processing, so **Pay** reuses the same `OrderID`, which can still be paid, and no second transaction is
+  started.
+- After a transaction pays the payment, the plugin also asks Autopay to cancel its `FAILURE` transactions: an attempt
+  that the customer started again there and that waits for the payment is cancelled. If such a transaction is paid
+  anyway, the payment gets the `duplicate_payment` warning.
 
 ### Removed

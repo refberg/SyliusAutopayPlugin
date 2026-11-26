@@ -7,6 +7,7 @@ namespace Refberg\SyliusAutopayPlugin\CommandHandler;
 use LogicException;
 use Psr\Log\LoggerInterface;
 use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayException;
+use Refberg\SyliusAutopayPlugin\Api\Model\AutopayTransaction;
 use Refberg\SyliusAutopayPlugin\Config\AutopayCredentials;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
 use Refberg\SyliusAutopayPlugin\Payment\TransactionCancellerInterface;
@@ -15,7 +16,10 @@ use Sylius\Component\Core\Model\PaymentInterface;
 use Sylius\Component\Payment\Model\PaymentMethodInterface;
 use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use Sylius\Component\Payment\PaymentRequestTransitions;
+use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
 use function hash;
+use function in_array;
+use function is_string;
 use function substr;
 
 /**
@@ -49,6 +53,35 @@ trait PaymentRequestHandlerTrait
     }
 
     /**
+     * Completes the capture requests of paid OrderIDs. After a FAILURE the capture stays processing, so Pay sends
+     * the customer back to the same OrderID, which can still be paid, instead of starting a second one.
+     *
+     * @param PaymentRequestRepositoryInterface<PaymentRequestInterface>|null $paymentRequestRepository
+     * @param string|null $orderId null completes the capture requests of every paid OrderID
+     */
+    private function closeCaptureRequests(?PaymentRequestRepositoryInterface $paymentRequestRepository, PaymentInterface $payment, ?string $orderId = null): void
+    {
+        if (!$paymentRequestRepository instanceof PaymentRequestRepositoryInterface) {
+            return;
+        }
+
+        $details = PaymentDetails::of($payment);
+        foreach ($paymentRequestRepository->findByPaymentIdAndStates($payment->getId(), [PaymentRequestInterface::STATE_PROCESSING]) as $captureRequest) {
+            $captureOrderId = $captureRequest->getResponseData()['order_id'] ?? null;
+            if (
+                !is_string($captureOrderId) ||
+                (null !== $orderId && $orderId !== $captureOrderId) ||
+                !in_array($captureRequest->getAction(), [PaymentRequestInterface::ACTION_CAPTURE, PaymentRequestInterface::ACTION_AUTHORIZE], true) ||
+                AutopayTransaction::STATUS_SUCCESS !== $details->getOrderStatus($captureOrderId)
+            ) {
+                continue;
+            }
+
+            $this->transitionRequest($captureRequest, PaymentRequestTransitions::TRANSITION_COMPLETE);
+        }
+    }
+
+    /**
      * After an OrderID completed the payment: restores the paid method and cancels the other OrderIDs
      * of the payment that could still be paid (another tab, a double click), so the order is not paid twice.
      */
@@ -62,21 +95,21 @@ trait PaymentRequestHandlerTrait
         $this->restorePaidMethod($payment, $paymentRequest->getMethod(), $orderId);
 
         $details = PaymentDetails::of($payment);
-        foreach ($details->getOpenOrderIds() as $openOrderId) {
-            if (!$details->hasOrderOfService($openOrderId, $credentials->serviceId)) {
+        foreach ($details->getUnpaidOrderIds() as $unpaidOrderId) {
+            if (!$details->hasOrderOfService($unpaidOrderId, $credentials->serviceId)) {
                 continue;
             }
 
             try {
-                $result = $canceller->cancel($payment, $openOrderId, self::messageId($paymentRequest, $openOrderId), $credentials);
+                $result = $canceller->cancel($payment, $unpaidOrderId, self::messageId($paymentRequest, $unpaidOrderId), $credentials);
             } catch (AutopayException $exception) {
                 $result = $exception->getMessage();
             }
 
-            if (TransactionCancellerInterface::RESULT_CANCELLED !== $result) {
+            if (!in_array($result, [TransactionCancellerInterface::RESULT_CANCELLED, TransactionCancellerInterface::RESULT_NOTHING_PENDING], true)) {
                 $this->logger->warning('Could not cancel another Autopay transaction of a paid payment; check it in the Autopay panel.', [
                     'payment_id' => $payment->getId(),
-                    'order_id' => $openOrderId,
+                    'order_id' => $unpaidOrderId,
                     'reason' => $result,
                 ]);
             }
