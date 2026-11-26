@@ -6,9 +6,12 @@ on:
             - main
     pull_request: ~
     workflow_dispatch: ~
+    schedule:
+        -
+            cron: "0 4 * * 1"
 
 concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
+    group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
     cancel-in-progress: true
 
 permissions:
@@ -108,6 +111,7 @@ jobs:
                     - php: "8.3"
                       sylius: "~2.3.3"
                       symfony: "7.4.*"
+                      coverage: true
                     - php: "8.4"
                       sylius: "~2.3.3"
                       symfony: "8.*"
@@ -134,7 +138,7 @@ jobs:
                 with:
                     php-version: "${{ matrix.php }}"
                     extensions: intl, sodium, pdo_mysql
-                    coverage: none
+                    coverage: ${{ matrix.coverage && 'pcov' || 'none' }}
                     tools: composer:v2, flex
 
             -
@@ -155,7 +159,7 @@ jobs:
 
             -
                 name: Run unit tests
-                run: vendor/bin/phpunit --testsuite=unit
+                run: vendor/bin/phpunit --testsuite=unit ${{ matrix.coverage && '--coverage-clover var/coverage/unit.clover.xml --log-junit var/coverage/unit.junit.xml' || '' }}
 
             -
                 name: Validate container
@@ -170,7 +174,16 @@ jobs:
 
             -
                 name: Run integration tests
-                run: vendor/bin/phpunit --testsuite=integration
+                run: vendor/bin/phpunit --testsuite=integration ${{ matrix.coverage && '--coverage-clover var/coverage/integration.clover.xml --log-junit var/coverage/integration.junit.xml' || '' }}
+
+            -
+                name: Upload coverage
+                if: matrix.coverage
+                uses: actions/upload-artifact@v7
+                with:
+                    name: coverage
+                    path: var/coverage/
+                    retention-days: 1
 
     mutation:
         runs-on: ubuntu-latest
@@ -196,6 +209,39 @@ jobs:
             -
                 name: Run Infection
                 run: infection --threads=max --no-progress --show-mutations=10
+
+    sonar:
+        runs-on: ubuntu-latest
+        name: "SonarQube Cloud"
+        needs: tests
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) }}
+
+        env:
+            SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+        steps:
+            -
+                uses: actions/checkout@v7
+                with:
+                    fetch-depth: 0
+
+            -
+                name: Download coverage
+                continue-on-error: true
+                uses: actions/download-artifact@v8
+                with:
+                    name: coverage
+                    path: var/coverage/
+
+            -
+                name: Scan
+                if: env.SONAR_TOKEN != ''
+                uses: SonarSource/sonarqube-scan-action@70bad232163b09d998ea0707ee80c0ec80798c16 # v8.5.1
+
+            -
+                name: Skip scan without token
+                if: env.SONAR_TOKEN == ''
+                run: echo "::notice::SONAR_TOKEN not set, skipping"
 
     # Single required check for branch protection, independent of the matrix job names.
     ci-passed:

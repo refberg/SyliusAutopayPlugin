@@ -8,9 +8,19 @@ updates:
             interval: weekly
         versioning-strategy: increase-if-necessary
         open-pull-requests-limit: 5
+        groups:
+            dev-dependencies:
+                dependency-type: development
+                update-types:
+                    - minor
+                    - patch
 
     -
         package-ecosystem: github-actions
         directory: "/"
         schedule:
             interval: weekly
+        groups:
+            github-actions:
+                patterns:
+                    - "*"
