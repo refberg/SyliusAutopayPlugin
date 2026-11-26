@@ -35,7 +35,12 @@ final class CapturePaymentRequestHandlerTest extends TestCase
         self::assertSame(PaymentRequestInterface::STATE_PROCESSING, $paymentRequest->getState(), (string) json_encode($paymentRequest->getResponseData()));
         $orderId = $autopay->lastOrderId();
         self::assertSame(PaymentRequestInterface::STATE_PROCESSING, $paymentRequest->getState());
-        self::assertSame($orderId, $paymentRequest->getResponseData()['order_id'] ?? null);
+        $remoteId = $autopay->transaction($orderId)['attempts'][0]['remoteID'];
+        self::assertSame([
+            'redirect_url' => 'https://' . FakeAutopay::HOST . '/payment/continue/' . $remoteId . '/ABCDEFGH',
+            'order_id' => $orderId,
+            'remote_id' => $remoteId,
+        ], $paymentRequest->getResponseData());
         self::assertTrue(PaymentDetails::of($payment)->hasOrderOfService($orderId, FakeAutopay::SERVICE_ID));
         self::assertSame(PaymentInterface::STATE_NEW, $payment->getState());
     }

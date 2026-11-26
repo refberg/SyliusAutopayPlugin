@@ -12,6 +12,7 @@ use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayApiException;
 use Refberg\SyliusAutopayPlugin\Command\NotifyPaymentRequest;
 use Refberg\SyliusAutopayPlugin\CommandHandler\NotifyPaymentRequestHandler;
 use Refberg\SyliusAutopayPlugin\Config\CredentialsResolver;
+use Refberg\SyliusAutopayPlugin\Notification\Notification;
 use Refberg\SyliusAutopayPlugin\Notification\NotificationParser;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentDetails;
 use Refberg\SyliusAutopayPlugin\Payment\PaymentLockerInterface;
@@ -33,7 +34,9 @@ use Tests\Refberg\SyliusAutopayPlugin\Support\PaymentStateMachine;
 use function array_column;
 use function array_filter;
 use function array_values;
+use function hash;
 use function in_array;
+use function substr;
 
 final class NotifyPaymentRequestHandlerTest extends TestCase
 {
@@ -104,8 +107,77 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
         $handler(new NotifyPaymentRequest(HandlerFixtures::HASH));
 
         self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $paymentRequest->getState());
+        self::assertSame([
+            'type' => Notification::TYPE_TRANSACTION,
+            'order_id' => 'O1',
+            'result' => PaymentStateApplierInterface::RESULT_COMPLETED,
+            'payment_state' => PaymentInterface::STATE_COMPLETED,
+        ], $paymentRequest->getResponseData());
         self::assertSame($method, $payment->getMethod());
         self::assertSame([['type' => PaymentDetails::WARNING_PAYMENT_METHOD_CHANGED, 'order_id' => 'O1']], PaymentDetails::of($payment)->warnings());
+    }
+
+    public function test_payment_that_already_has_a_method_with_the_code_that_started_the_order_id_is_not_changed(): void
+    {
+        [$handler, , $payment] = $this->handler(self::completingSynchronizer(), FakeAutopay::itn(['orderID' => 'O1', 'paymentStatus' => 'SUCCESS']), startedWith: 'AUTOPAY');
+        $sameCode = HandlerFixtures::method();
+        $payment->setMethod($sameCode);
+
+        $handler(new NotifyPaymentRequest(HandlerFixtures::HASH));
+
+        self::assertSame($sameCode, $payment->getMethod());
+        self::assertSame([], PaymentDetails::of($payment)->warnings());
+    }
+
+    public function test_switched_method_is_restored_when_the_notified_method_started_the_order_id(): void
+    {
+        [$handler, , $payment, $method] = $this->handler(self::completingSynchronizer(), FakeAutopay::itn(['orderID' => 'O1', 'paymentStatus' => 'SUCCESS']), startedWith: 'AUTOPAY');
+        $other = new PaymentMethod();
+        $other->setCode('BANK_TRANSFER');
+        $payment->setMethod($other);
+
+        $handler(new NotifyPaymentRequest(HandlerFixtures::HASH));
+
+        self::assertSame($method, $payment->getMethod());
+        self::assertSame([['type' => PaymentDetails::WARNING_PAYMENT_METHOD_CHANGED, 'order_id' => 'O1']], PaymentDetails::of($payment)->warnings());
+    }
+
+    public function test_method_other_than_the_one_that_started_the_order_id_is_not_restored(): void
+    {
+        $logger = new MemoryLogger();
+        [$handler, , $payment] = $this->handler(self::completingSynchronizer(), FakeAutopay::itn(['orderID' => 'O1', 'paymentStatus' => 'SUCCESS']), logger: $logger, startedWith: 'AUTOPAY_OTHER');
+        $other = new PaymentMethod();
+        $other->setCode('BANK_TRANSFER');
+        $payment->setMethod($other);
+
+        $handler(new NotifyPaymentRequest(HandlerFixtures::HASH));
+
+        self::assertSame($other, $payment->getMethod());
+        self::assertSame([], PaymentDetails::of($payment)->warnings());
+        self::assertSame(['warning'], array_column($logger->records, 'level'));
+    }
+
+    public function test_payment_is_locked_once(): void
+    {
+        $paymentLocker = self::createMock(PaymentLockerInterface::class);
+        $paymentLocker->expects(self::once())->method('lock');
+        [$handler] = $this->handler(self::completingSynchronizer(), FakeAutopay::itn(['orderID' => 'O1', 'paymentStatus' => 'SUCCESS']), paymentLocker: $paymentLocker);
+
+        $handler(new NotifyPaymentRequest(HandlerFixtures::HASH));
+    }
+
+    public function test_other_order_id_is_cancelled_with_a_message_id_derived_from_the_request_and_the_order_id(): void
+    {
+        $canceller = self::createMock(TransactionCancellerInterface::class);
+        $canceller->expects(self::once())->method('cancel')
+            ->with(self::anything(), 'O2', substr(hash('sha256', HandlerFixtures::HASH . '|O2'), 0, 32), self::anything())
+            ->willReturn(TransactionCancellerInterface::RESULT_CANCELLED);
+        [$handler, , $payment] = $this->handler(self::completingSynchronizer(), FakeAutopay::itn(['orderID' => 'O1', 'paymentStatus' => 'SUCCESS']), canceller: $canceller);
+        $details = PaymentDetails::of($payment);
+        $details->addOrder('O2', FakeAutopay::SERVICE_ID, 'R2', 1500, 'PLN');
+        $details->save();
+
+        $handler(new NotifyPaymentRequest(HandlerFixtures::HASH));
     }
 
     /**
@@ -175,6 +247,21 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
         self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $paymentRequest->getState());
     }
 
+    private static function completingSynchronizer(): PaymentSynchronizerInterface
+    {
+        $synchronizer = self::createStub(PaymentSynchronizerInterface::class);
+        $synchronizer->method('synchronize')->willReturnCallback(static function (PaymentInterface $payment, string $orderId): string {
+            $details = PaymentDetails::of($payment);
+            $details->recordOrderStatus($orderId, 'SUCCESS');
+            $details->save();
+            $payment->setState(PaymentInterface::STATE_COMPLETED);
+
+            return PaymentStateApplierInterface::RESULT_COMPLETED;
+        });
+
+        return $synchronizer;
+    }
+
     private static function captureRequest(Payment $payment, PaymentMethod $method, string $action, string $orderId): PaymentRequestInterface
     {
         $request = new PaymentRequest($payment, $method);
@@ -196,11 +283,13 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
         ?PaymentRequestRepositoryInterface $paymentRequestRepository = null,
         ?TransactionCancellerInterface $canceller = null,
         LoggerInterface $logger = new NullLogger(),
+        ?string $startedWith = null,
+        ?PaymentLockerInterface $paymentLocker = null,
     ): array {
         $method = HandlerFixtures::method();
         $payment = HandlerFixtures::payment($method, PaymentInterface::STATE_NEW);
         $details = PaymentDetails::of($payment);
-        $details->addOrder('O1', FakeAutopay::SERVICE_ID, 'R1', 1500, 'PLN');
+        $details->addOrder('O1', FakeAutopay::SERVICE_ID, 'R1', 1500, 'PLN', $startedWith);
         $details->save();
         $paymentRequest = HandlerFixtures::paymentRequest($payment, $method, PaymentRequestInterface::ACTION_NOTIFY);
         $paymentRequest->setPayload(['http_request' => ['content' => $body, 'headers' => []]]);
@@ -214,7 +303,7 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
             new NotificationParser(new SignatureVerifier()),
             $synchronizer,
             $canceller ?? self::createStub(TransactionCancellerInterface::class),
-            self::createStub(PaymentLockerInterface::class),
+            $paymentLocker ?? self::createStub(PaymentLockerInterface::class),
             new PaymentStateMachine(),
             $logger,
             $paymentRequestRepository,

@@ -53,6 +53,59 @@ final class StatusPaymentRequestHandlerTest extends TestCase
         self::assertSame(PaymentRequestInterface::STATE_PROCESSING, $otherOrderCapture->getState());
         self::assertSame(PaymentRequestInterface::STATE_CANCELLED, $cancelledCapture->getState());
         self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $statusRequest->getState());
+        self::assertSame(['payment_state' => PaymentInterface::STATE_NEW, 'order_id' => 'O1', 'autopay_status' => $autopayStatus], $statusRequest->getResponseData());
+    }
+
+    public function test_only_the_three_newest_open_order_ids_of_the_service_are_checked(): void
+    {
+        $method = HandlerFixtures::method();
+        $payment = self::payment($method);
+        $details = PaymentDetails::of($payment);
+        $details->addOrder('O2', FakeAutopay::SERVICE_ID, 'R-O2', 1500, 'PLN');
+        $details->addOrder('O3', FakeAutopay::SERVICE_ID, 'R-O3', 1500, 'PLN');
+        $details->addOrder('O4', FakeAutopay::SERVICE_ID, 'R-O4', 1500, 'PLN');
+        $details->addOrder('OTHER', '999999', 'R-OTHER', 1500, 'PLN');
+        $details->save();
+        $other = new PaymentMethod();
+        $other->setCode('BANK_TRANSFER');
+        $payment->setMethod($other);
+        $statusRequest = HandlerFixtures::paymentRequest($payment, $method, PaymentRequestInterface::ACTION_STATUS);
+        $checked = [];
+        $synchronizer = self::createStub(PaymentSynchronizerInterface::class);
+        $synchronizer->method('synchronize')->willReturnCallback(static function (PaymentInterface $synchronized, string $orderId) use (&$checked): string {
+            $checked[] = $orderId;
+
+            return PaymentStateApplierInterface::RESULT_UNCHANGED;
+        });
+
+        $this->invoke($statusRequest, [$statusRequest], $synchronizer);
+
+        self::assertSame(['O4', 'O3', 'O2'], $checked);
+        self::assertSame($other, $payment->getMethod());
+    }
+
+    public function test_payment_is_locked_once(): void
+    {
+        $method = HandlerFixtures::method();
+        $statusRequest = HandlerFixtures::paymentRequest(self::payment($method), $method, PaymentRequestInterface::ACTION_STATUS);
+        $paymentLocker = self::createMock(PaymentLockerInterface::class);
+        $paymentLocker->expects(self::once())->method('lock');
+
+        $this->invoke($statusRequest, [$statusRequest], self::createStub(PaymentSynchronizerInterface::class), paymentLocker: $paymentLocker);
+    }
+
+    public function test_invalid_configuration_fails_the_request(): void
+    {
+        $method = HandlerFixtures::method();
+        $method->getGatewayConfig()?->setConfig([]);
+        $statusRequest = HandlerFixtures::paymentRequest(self::payment($method), $method, PaymentRequestInterface::ACTION_STATUS);
+        $synchronizer = self::createMock(PaymentSynchronizerInterface::class);
+        $synchronizer->expects(self::never())->method('synchronize');
+
+        $this->invoke($statusRequest, [$statusRequest], $synchronizer);
+
+        self::assertSame(PaymentRequestInterface::STATE_FAILED, $statusRequest->getState());
+        self::assertArrayHasKey('error', $statusRequest->getResponseData());
     }
 
     #[TestWith(['SUCCESS', PaymentRequestInterface::STATE_COMPLETED])]
@@ -132,8 +185,13 @@ final class StatusPaymentRequestHandlerTest extends TestCase
     /**
      * @param list<PaymentRequestInterface> $requests
      */
-    private function invoke(PaymentRequestInterface $statusRequest, array $requests, PaymentSynchronizerInterface $synchronizer, MemoryLogger $logger = new MemoryLogger()): void
-    {
+    private function invoke(
+        PaymentRequestInterface $statusRequest,
+        array $requests,
+        PaymentSynchronizerInterface $synchronizer,
+        MemoryLogger $logger = new MemoryLogger(),
+        ?PaymentLockerInterface $paymentLocker = null,
+    ): void {
         $paymentRequestProvider = self::createStub(PaymentRequestProviderInterface::class);
         $paymentRequestProvider->method('provide')->willReturn($statusRequest);
 
@@ -147,7 +205,7 @@ final class StatusPaymentRequestHandlerTest extends TestCase
             new CredentialsResolver(),
             $synchronizer,
             self::createStub(TransactionCancellerInterface::class),
-            self::createStub(PaymentLockerInterface::class),
+            $paymentLocker ?? self::createStub(PaymentLockerInterface::class),
             new PaymentStateMachine(),
             $logger,
             $paymentRequestRepository,
