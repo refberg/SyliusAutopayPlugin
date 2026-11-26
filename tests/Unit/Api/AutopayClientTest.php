@@ -17,6 +17,7 @@ use Refberg\SyliusAutopayPlugin\Signature\SignatureVerifier;
 use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 use Tests\Refberg\SyliusAutopayPlugin\Support\Credentials;
 use Tests\Refberg\SyliusAutopayPlugin\Support\FakeAutopay;
 use Tests\Refberg\SyliusAutopayPlugin\Support\MemoryLogger;
@@ -155,6 +156,27 @@ final class AutopayClientTest extends TestCase
         $client->retrieveTransaction(Credentials::fake(), 'ORDER-1');
     }
 
+    public function test_requests_disable_redirects_and_set_timeout(): void
+    {
+        $options = [];
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $requestOptions) use (&$options): ResponseInterface {
+            /** @var array<string, mixed> $requestOptions */
+            $options[] = $requestOptions;
+
+            return ($this->autopay)($method, $url, $requestOptions);
+        });
+        $client = new AutopayClient($httpClient, new SignatureVerifier(), $this->logger, 7.5);
+
+        $client->startTransaction(Credentials::fake(), self::transaction('ORDER-1'));
+        $client->retrieveTransaction(Credentials::fake(), 'ORDER-1');
+
+        self::assertCount(2, $options);
+        foreach ($options as $requestOptions) {
+            self::assertSame(0, $requestOptions['max_redirects'] ?? null);
+            self::assertSame(7.5, $requestOptions['timeout'] ?? null);
+        }
+    }
+
     public function test_it_reads_the_transaction_state(): void
     {
         $started = $this->client->startTransaction(Credentials::fake(), self::transaction('ORDER-1'));
@@ -177,6 +199,7 @@ final class AutopayClientTest extends TestCase
 
         self::assertSame('SUCCESS', $transaction->status);
         self::assertSame($success, $transaction->remoteId);
+        self::assertSame([$success], $transaction->paidRemoteIds);
     }
 
     public function test_a_pending_attempt_wins_over_failed_ones(): void
@@ -275,14 +298,49 @@ final class AutopayClientTest extends TestCase
         $client->cancelTransaction(Credentials::fake(), 'ORDER-1', str_repeat('d', 32));
     }
 
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function invalidCancellationResponses(): iterable
+    {
+        $messageId = str_repeat('d', 32);
+        $otherMessageId = str_repeat('e', 32);
+        yield 'other message id' => [sprintf('<transaction><serviceID>100001</serviceID><messageID>%s</messageID><confirmation>CONFIRMED</confirmation><reason>CANCELED_FULLY</reason><hash>%s</hash></transaction>', $otherMessageId, FakeAutopay::sign(FakeAutopay::SERVICE_ID, $otherMessageId, 'CONFIRMED', 'CANCELED_FULLY'))];
+        yield 'unknown confirmation' => [sprintf('<transaction><serviceID>100001</serviceID><messageID>%s</messageID><confirmation>MAYBE</confirmation><reason>CANCELED_FULLY</reason><hash>%s</hash></transaction>', $messageId, FakeAutopay::sign(FakeAutopay::SERVICE_ID, $messageId, 'MAYBE', 'CANCELED_FULLY'))];
+    }
+
+    #[DataProvider('invalidCancellationResponses')]
+    public function test_invalid_cancellation_response_is_rejected(string $body): void
+    {
+        $client = new AutopayClient(new MockHttpClient(new MockResponse($body)), new SignatureVerifier());
+
+        $this->expectException(AutopayApiException::class);
+
+        $client->cancelTransaction(Credentials::fake(), 'ORDER-1', str_repeat('d', 32));
+    }
+
+    public function test_cancellation_error_document_becomes_an_api_exception(): void
+    {
+        $this->autopay->failNextRequest(200, 'INVALID_HASH');
+
+        try {
+            $this->client->cancelTransaction(Credentials::fake(), 'ORDER-1', str_repeat('d', 32));
+            self::fail('Expected an exception.');
+        } catch (AutopayApiException $exception) {
+            self::assertSame('INVALID_HASH', $exception->getErrorName());
+        }
+    }
+
     public function test_refund_status_with_a_wrong_hash_or_an_error_is_rejected(): void
     {
         $client = new AutopayClient(new MockHttpClient([
             new MockResponse((string) json_encode(['serviceId' => 100001, 'messageId' => str_repeat('a', 32), 'status' => 'DONE', 'remoteOutId' => 'X', 'hash' => str_repeat('0', 64)])),
             new MockResponse((string) json_encode(['serviceId' => 100001, 'messageId' => str_repeat('a', 32), 'status' => null, 'errorStatus' => 'NOT_FOUND'])),
+            new MockResponse((string) json_encode(['serviceId' => 100001, 'messageId' => str_repeat('a', 32), 'status' => 'DONE', 'remoteOutId' => 'X', 'hash' => FakeAutopay::sign(FakeAutopay::SERVICE_ID, str_repeat('a', 32), 'DONE', 'X'), 'errorStatus' => 'NOT_FOUND'])),
+            new MockResponse((string) json_encode(['serviceId' => 100001, 'messageId' => str_repeat('a', 32), 'remoteOutId' => 'X', 'hash' => FakeAutopay::sign(FakeAutopay::SERVICE_ID, str_repeat('a', 32), 'X')])),
         ]), new SignatureVerifier());
 
-        foreach ([1, 2] as $attemptNumber) {
+        foreach ([1, 2, 3, 4] as $attemptNumber) {
             try {
                 $client->retrieveRefundStatus(Credentials::fake(), str_repeat('a', 32));
                 self::fail('Expected an exception for response ' . $attemptNumber . '.');
@@ -322,6 +380,16 @@ final class AutopayClientTest extends TestCase
     public function test_refund_confirmation_with_a_wrong_hash_is_rejected(): void
     {
         $body = '<refund><serviceID>100001</serviceID><messageID>' . str_repeat('a', 32) . '</messageID><hash>' . str_repeat('0', 64) . '</hash></refund>';
+        $client = new AutopayClient(new MockHttpClient(new MockResponse($body)), new SignatureVerifier());
+
+        $this->expectException(AutopayApiException::class);
+
+        $client->createRefund(Credentials::fake(), 'R1', 1500, 'PLN', str_repeat('a', 32));
+    }
+
+    public function test_refund_confirmation_of_another_message_id_is_rejected(): void
+    {
+        $body = '<refund><serviceID>100001</serviceID><messageID>' . str_repeat('b', 32) . '</messageID><hash>' . FakeAutopay::sign(FakeAutopay::SERVICE_ID, str_repeat('a', 32)) . '</hash></refund>';
         $client = new AutopayClient(new MockHttpClient(new MockResponse($body)), new SignatureVerifier());
 
         $this->expectException(AutopayApiException::class);
