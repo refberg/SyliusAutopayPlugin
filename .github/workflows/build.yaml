@@ -236,7 +236,7 @@ jobs:
             -
                 name: Scan
                 if: env.SONAR_TOKEN != ''
-                uses: SonarSource/sonarqube-scan-action@v8
+                uses: SonarSource/sonarqube-scan-action@70bad232163b09d998ea0707ee80c0ec80798c16 # v8.5.1
 
             -
                 name: Skip scan without token
