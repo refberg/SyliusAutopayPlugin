@@ -198,22 +198,23 @@ final class SynchronizersTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{string}>
+     * @return iterable<string, array{string, string}>
      */
     public static function unexpectedCancellationAnswers(): iterable
     {
         $messageId = str_repeat('d', 32);
-        yield 'confirmed with an unknown reason' => [sprintf('<transaction><serviceID>%s</serviceID><messageID>%s</messageID><confirmation>CONFIRMED</confirmation><reason>OTHER</reason><hash>%s</hash></transaction>', FakeAutopay::SERVICE_ID, $messageId, FakeAutopay::sign(FakeAutopay::SERVICE_ID, $messageId, 'CONFIRMED', 'OTHER'))];
-        yield 'confirmed without a reason' => [sprintf('<transaction><serviceID>%s</serviceID><messageID>%s</messageID><confirmation>CONFIRMED</confirmation><hash>%s</hash></transaction>', FakeAutopay::SERVICE_ID, $messageId, FakeAutopay::sign(FakeAutopay::SERVICE_ID, $messageId, 'CONFIRMED'))];
-        yield 'not confirmed partial cancellation' => ['<transaction><confirmation>NOTCONFIRMED</confirmation><reason>CANCELED_PARTIALLY</reason></transaction>'];
+        yield 'confirmed with an unknown reason' => [sprintf('<transaction><serviceID>%s</serviceID><messageID>%s</messageID><confirmation>CONFIRMED</confirmation><reason>OTHER</reason><hash>%s</hash></transaction>', FakeAutopay::SERVICE_ID, $messageId, FakeAutopay::sign(FakeAutopay::SERVICE_ID, $messageId, 'CONFIRMED', 'OTHER')), 'Autopay did not cancel transaction O1 (OTHER).'];
+        yield 'confirmed without a reason' => [sprintf('<transaction><serviceID>%s</serviceID><messageID>%s</messageID><confirmation>CONFIRMED</confirmation><hash>%s</hash></transaction>', FakeAutopay::SERVICE_ID, $messageId, FakeAutopay::sign(FakeAutopay::SERVICE_ID, $messageId, 'CONFIRMED')), 'Autopay did not cancel transaction O1 (no reason).'];
+        yield 'not confirmed partial cancellation' => ['<transaction><confirmation>NOTCONFIRMED</confirmation><reason>CANCELED_PARTIALLY</reason></transaction>', 'Autopay did not cancel transaction O1 (CANCELED_PARTIALLY).'];
     }
 
     #[DataProvider('unexpectedCancellationAnswers')]
-    public function test_unexpected_cancellation_answer_is_an_api_exception(string $body): void
+    public function test_unexpected_cancellation_answer_is_an_api_exception(string $body, string $message): void
     {
         $client = new AutopayClient(new MockHttpClient(new MockResponse($body)), new SignatureVerifier());
 
         $this->expectException(AutopayApiException::class);
+        $this->expectExceptionMessage($message);
 
         (new TransactionCanceller($client))->cancel(new Payment(), 'O1', str_repeat('d', 32), Credentials::fake());
     }
