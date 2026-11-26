@@ -22,6 +22,7 @@ use Tests\Refberg\SyliusAutopayPlugin\Support\Credentials;
 use Tests\Refberg\SyliusAutopayPlugin\Support\FakeAutopay;
 use Tests\Refberg\SyliusAutopayPlugin\Support\MemoryLogger;
 use Tests\Refberg\SyliusAutopayPlugin\Support\PaymentStateMachine;
+use function array_column;
 use function array_keys;
 use function str_repeat;
 
@@ -85,7 +86,8 @@ final class SynchronizersTest extends TestCase
         self::assertSame('DONE', $details->refunds()[$done]['status']);
         self::assertSame('CANCELED', $details->refunds()[$canceled]['status']);
         self::assertSame([$pending], $details->getPendingRefundIds());
-        self::assertSame('error', $this->logger->records[0]['level'] ?? null);
+        self::assertSame(['error'], array_column($this->logger->records, 'level'));
+        self::assertSame($canceled, $this->logger->records[0]['context']['message_id'] ?? null);
 
         self::assertSame(0, $synchronizer->synchronize($payment, Credentials::fake()));
         self::assertCount(4, $this->autopay->requests('POST', '#outDetails#'));
