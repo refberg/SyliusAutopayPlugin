@@ -97,7 +97,7 @@ final class CredentialsResolverTest extends TestCase
         self::assertStringNotContainsString('secret-key', print_r($credentials, true));
 
         $this->expectException(LogicException::class);
-        serialize($credentials);
+        self::fail('Credentials must not be serializable: ' . serialize($credentials));
     }
 
     /**
