@@ -159,7 +159,7 @@ jobs:
 
             -
                 name: Run unit tests
-                run: vendor/bin/phpunit --testsuite=unit ${{ matrix.coverage && '--coverage-clover var/coverage/unit.clover.xml --log-junit var/coverage/unit.junit.xml' || '' }}
+                run: vendor/bin/phpunit --testsuite=unit ${{ matrix.coverage && '--coverage-clover var/coverage/unit.clover.xml' || '' }}
 
             -
                 name: Validate container
@@ -174,7 +174,7 @@ jobs:
 
             -
                 name: Run integration tests
-                run: vendor/bin/phpunit --testsuite=integration ${{ matrix.coverage && '--coverage-clover var/coverage/integration.clover.xml --log-junit var/coverage/integration.junit.xml' || '' }}
+                run: vendor/bin/phpunit --testsuite=integration ${{ matrix.coverage && '--coverage-clover var/coverage/integration.clover.xml' || '' }}
 
             -
                 name: Upload coverage
