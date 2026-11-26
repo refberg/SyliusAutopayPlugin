@@ -6,6 +6,7 @@ namespace Tests\Refberg\SyliusAutopayPlugin\Unit\CommandHandler;
 
 use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
+use Refberg\SyliusAutopayPlugin\Api\Exception\AutopayApiException;
 use Refberg\SyliusAutopayPlugin\Command\StatusPaymentRequest;
 use Refberg\SyliusAutopayPlugin\CommandHandler\StatusPaymentRequestHandler;
 use Refberg\SyliusAutopayPlugin\Config\CredentialsResolver;
@@ -23,6 +24,7 @@ use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
 use Tests\Refberg\SyliusAutopayPlugin\Support\FakeAutopay;
 use Tests\Refberg\SyliusAutopayPlugin\Support\HandlerFixtures;
+use Tests\Refberg\SyliusAutopayPlugin\Support\MemoryLogger;
 use Tests\Refberg\SyliusAutopayPlugin\Support\PaymentStateMachine;
 use function array_filter;
 use function array_values;
@@ -90,14 +92,31 @@ final class StatusPaymentRequestHandlerTest extends TestCase
         self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $statusRequest->getState());
     }
 
+    public function test_api_error_fails_the_request_and_keeps_the_payment(): void
+    {
+        $method = HandlerFixtures::method();
+        $payment = self::payment($method);
+        $capture = self::request($payment, $method, PaymentRequestInterface::ACTION_CAPTURE, PaymentRequestInterface::STATE_PROCESSING, 'O1');
+        $statusRequest = HandlerFixtures::paymentRequest($payment, $method, PaymentRequestInterface::ACTION_STATUS);
+        $synchronizer = self::createStub(PaymentSynchronizerInterface::class);
+        $synchronizer->method('synchronize')->willThrowException(new AutopayApiException('Checking Autopay transaction failed (HTTP 503).', 503));
+        $logger = new MemoryLogger();
+
+        $this->invoke($statusRequest, [$capture, $statusRequest], $synchronizer, $logger);
+
+        self::assertSame(PaymentRequestInterface::STATE_FAILED, $statusRequest->getState());
+        self::assertSame(['error' => 'Checking Autopay transaction failed (HTTP 503).'], $statusRequest->getResponseData());
+        self::assertSame(PaymentInterface::STATE_NEW, $payment->getState());
+        self::assertSame(PaymentRequestInterface::STATE_PROCESSING, $capture->getState());
+        self::assertSame('warning', $logger->records[0]['level'] ?? null);
+        self::assertSame(['payment_id' => 42, 'reason' => 'Checking Autopay transaction failed (HTTP 503).'], $logger->records[0]['context']);
+    }
+
     /**
      * @param list<PaymentRequestInterface> $requests
      */
     private function handle(PaymentRequestInterface $statusRequest, array $requests, string $autopayStatus): void
     {
-        $paymentRequestProvider = self::createStub(PaymentRequestProviderInterface::class);
-        $paymentRequestProvider->method('provide')->willReturn($statusRequest);
-
         $synchronizer = self::createStub(PaymentSynchronizerInterface::class);
         $synchronizer->method('synchronize')->willReturnCallback(static function (PaymentInterface $synchronized, string $orderId) use ($autopayStatus): string {
             $details = PaymentDetails::of($synchronized);
@@ -106,6 +125,17 @@ final class StatusPaymentRequestHandlerTest extends TestCase
 
             return PaymentStateApplierInterface::RESULT_UNCHANGED;
         });
+
+        $this->invoke($statusRequest, $requests, $synchronizer);
+    }
+
+    /**
+     * @param list<PaymentRequestInterface> $requests
+     */
+    private function invoke(PaymentRequestInterface $statusRequest, array $requests, PaymentSynchronizerInterface $synchronizer, MemoryLogger $logger = new MemoryLogger()): void
+    {
+        $paymentRequestProvider = self::createStub(PaymentRequestProviderInterface::class);
+        $paymentRequestProvider->method('provide')->willReturn($statusRequest);
 
         $paymentRequestRepository = self::createStub(PaymentRequestRepositoryInterface::class);
         $paymentRequestRepository->method('findByPaymentIdAndStates')->willReturnCallback(
@@ -119,7 +149,8 @@ final class StatusPaymentRequestHandlerTest extends TestCase
             self::createStub(TransactionCancellerInterface::class),
             self::createStub(PaymentLockerInterface::class),
             new PaymentStateMachine(),
-            paymentRequestRepository: $paymentRequestRepository,
+            $logger,
+            $paymentRequestRepository,
         );
 
         $handler(new StatusPaymentRequest(HandlerFixtures::HASH));
