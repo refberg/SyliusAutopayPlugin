@@ -9,3 +9,4 @@
 /infection.json5 export-ignore
 /rector.php export-ignore
 /CHANGELOG.md export-ignore
+/sonar-project.properties export-ignore
