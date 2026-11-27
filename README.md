@@ -1,6 +1,7 @@
 # Sylius Autopay Plugin
 
 [![Build](https://github.com/refberg/SyliusAutopayPlugin/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/refberg/SyliusAutopayPlugin/actions/workflows/build.yaml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=refberg_SyliusAutopayPlugin&metric=alert_status)](https://sonarcloud.io/summary/overall?id=refberg_SyliusAutopayPlugin)
 [![PHP](https://img.shields.io/badge/PHP-8.2%20%7C%208.3%20%7C%208.4%20%7C%208.5-777bb4)](composer.json)
 [![Sylius](https://img.shields.io/badge/Sylius-2.2%20%7C%202.3-1abb9c)](https://sylius.com)
 [![Symfony](https://img.shields.io/badge/Symfony-6.4%20%7C%207.4%20%7C%208-000000)](https://symfony.com)
